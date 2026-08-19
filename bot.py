@@ -54,6 +54,8 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("shihab")
+for noisy_logger in ("httpx", "httpcore", "telegram.request"):
+    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
 # Telegram command names are kept in English because Bot API command names are
 # ASCII-oriented. The user experience, buttons, help, and natural-language
@@ -136,6 +138,16 @@ LOCK_FEATURES = set(LOCKABLE_MEDIA) | {"chat", "bot_add"}
 
 URL_RE = re.compile(r"(?:https?://|www\.)\S+|(?:[a-z0-9-]+\.)+(?:com|net|org|io|me|co|tv)\b", re.I)
 MENTION_WORDS = ("شهاب", "شاخوف", "بوت")
+RPS_CHOICES = {"حجر": "🪨", "ورق": "📄", "مقص": "✂️"}
+RPS_BEATS = {"حجر": "مقص", "ورق": "حجر", "مقص": "ورق"}
+QUIZ_BANK = [
+    ("ما عاصمة المملكة العربية السعودية؟", "الرياض"),
+    ("كم عدد أيام الأسبوع؟", "7"),
+    ("ما الكوكب المعروف بالكوكب الأحمر؟", "المريخ"),
+    ("ما أكبر محيط على الأرض؟", "الهادئ"),
+    ("كم يساوي 6 × 7؟", "42"),
+]
+GAME_REWARDS = {"win": 25, "loss": -5, "draw": 5}
 
 
 def utc_now() -> str:
@@ -236,6 +248,24 @@ class Database:
                     user_id INTEGER PRIMARY KEY,
                     reason TEXT,
                     banned_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS game_stats (
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    coins INTEGER NOT NULL DEFAULT 0,
+                    wins INTEGER NOT NULL DEFAULT 0,
+                    losses INTEGER NOT NULL DEFAULT 0,
+                    games INTEGER NOT NULL DEFAULT 0,
+                    last_daily TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (chat_id, user_id)
+                );
+                CREATE TABLE IF NOT EXISTS game_achievements (
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    achievement TEXT NOT NULL,
+                    earned_at TEXT NOT NULL,
+                    PRIMARY KEY (chat_id, user_id, achievement)
                 );
                 CREATE TABLE IF NOT EXISTS event_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -459,6 +489,39 @@ class Database:
         with self.connect() as conn:
             return [int(row["user_id"]) for row in conn.execute("SELECT user_id FROM global_bans ORDER BY banned_at")]
 
+    def game_profile(self, chat_id: int, user_id: int) -> sqlite3.Row:
+        with self.connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO game_stats(chat_id,user_id,updated_at) VALUES(?,?,?)", (chat_id, user_id, utc_now()))
+            return conn.execute("SELECT * FROM game_stats WHERE chat_id=? AND user_id=?", (chat_id, user_id)).fetchone()
+
+    def record_game(self, chat_id: int, user_id: int, won: bool, delta: int) -> sqlite3.Row:
+        with self.connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO game_stats(chat_id,user_id,updated_at) VALUES(?,?,?)", (chat_id, user_id, utc_now()))
+            conn.execute("UPDATE game_stats SET coins=MAX(0,coins+?), wins=wins+?, losses=losses+?, games=games+1, updated_at=? WHERE chat_id=? AND user_id=?", (delta, int(won), int(not won), utc_now(), chat_id, user_id))
+            return conn.execute("SELECT * FROM game_stats WHERE chat_id=? AND user_id=?", (chat_id, user_id)).fetchone()
+
+    def daily_reward(self, chat_id: int, user_id: int, today: str) -> tuple[bool, sqlite3.Row]:
+        with self.connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO game_stats(chat_id,user_id,updated_at) VALUES(?,?,?)", (chat_id, user_id, utc_now()))
+            row = conn.execute("SELECT * FROM game_stats WHERE chat_id=? AND user_id=?", (chat_id, user_id)).fetchone()
+            if row["last_daily"] == today:
+                return False, row
+            conn.execute("UPDATE game_stats SET coins=coins+100,last_daily=?,updated_at=? WHERE chat_id=? AND user_id=?", (today, utc_now(), chat_id, user_id))
+            return True, conn.execute("SELECT * FROM game_stats WHERE chat_id=? AND user_id=?", (chat_id, user_id)).fetchone()
+
+    def leaderboard(self, chat_id: int, limit: int = 10) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute("SELECT g.*,u.first_name,u.username FROM game_stats g LEFT JOIN users u ON u.user_id=g.user_id WHERE g.chat_id=? ORDER BY g.coins DESC,g.wins DESC LIMIT ?", (chat_id, limit)).fetchall()
+
+    def add_achievement(self, chat_id: int, user_id: int, achievement: str) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute("INSERT OR IGNORE INTO game_achievements(chat_id,user_id,achievement,earned_at) VALUES(?,?,?,?)", (chat_id, user_id, achievement, utc_now()))
+            return cur.rowcount > 0
+
+    def achievements(self, chat_id: int, user_id: int) -> list[str]:
+        with self.connect() as conn:
+            return [str(row["achievement"]) for row in conn.execute("SELECT achievement FROM game_achievements WHERE chat_id=? AND user_id=? ORDER BY earned_at", (chat_id, user_id))]
+
     def log(self, chat_id: int | None, actor_id: int | None, event: str) -> None:
         with self.connect() as conn:
             conn.execute("INSERT INTO event_log(chat_id,actor_id,event,created_at) VALUES(?,?,?,?)", (chat_id, actor_id, event, utc_now()))
@@ -591,7 +654,8 @@ async def command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 def main_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("الأوامر", callback_data="home:commands"), InlineKeyboardButton("الخدمات", callback_data="home:services")],
-        [InlineKeyboardButton("الإعدادات", callback_data="home:settings"), InlineKeyboardButton("عن شهاب", callback_data="home:about")],
+        [InlineKeyboardButton("الإعدادات", callback_data="home:settings"), InlineKeyboardButton("🎮 الألعاب", callback_data="games:menu")],
+        [InlineKeyboardButton("عن شهاب", callback_data="home:about")],
     ]
     if is_owner:
         rows.append([InlineKeyboardButton("لوحة المالك", callback_data="owner:home")])
@@ -612,11 +676,13 @@ def commands_text() -> str:
         "    /addreply كلمة | الرد  /replies  /delreply كلمة  /delallreplies\n"
         "/addcmd أمر | الرد  /delcmd أمر\n"
         "/id  /age  /bio  /services  /whisper\n"
-        "/search اسم فيديو  /yt رابط فيديو\n\n"
+        "/search اسم فيديو  /yt رابط فيديو\n"
+        "/games  /points  /daily  /leaderboard  /dice  /coin  /rps  /quiz  /guess\n\n"
         "أوامر عربية مباشرة داخل المجموعة:\n"
         "طرد، حظر، رفع الحظر، كتم 10، فك الكتم، سجن، فك السجن، تقييد، تحذير، التحذيرات.\n"
         "رفع مشرف، إزالة مشرف، تغيير رتبة مدير، المشرفين، المميزين، صلاحياتي، معلومات المجموعة.\n"
-        "بحث اسم الفيديو، يوت رابط الفيديو، قفل الصور، فتح الروابط، تفعيل الترحيب، تعطيل التكرار.\n\n"
+        "بحث اسم الفيديو، يوت رابط الفيديو، قفل الصور، فتح الروابط، تفعيل الترحيب، تعطيل التكرار.\n"
+        "ألعاب: ألعاب، نرد، عملة، حجر ورق مقص، سؤال، إجابة جوابك، خمن، نقاطي، اليومية، المتصدرين.\n\n"
         "بدون شرطة مائلة أيضاً: قفل الروابط، فتح الصور، تفعيل الترحيب، تعطيل التكرار."
     )
 
@@ -624,7 +690,7 @@ def commands_text() -> str:
 def services_text() -> str:
     return (
         "خدمات شهاب\n\n"
-        "حماية الروابط والسبام، منع أنواع الوسائط، نظام التحذيرات، الكتم المؤقت، السجن، الترحيب، القوانين، الردود المخصصة، الأوامر المخصصة، معلومات الأعضاء، لوحة المالك، وبحث يوتيوب اختياري.\n\n"
+        "حماية الروابط والسبام، منع أنواع الوسائط، نظام التحذيرات، الكتم المؤقت، السجن، الترحيب، القوانين، الردود المخصصة، الأوامر المخصصة، معلومات الأعضاء، مركز ألعاب، نقاط، يومية، متصدرين، إنجازات، لوحة المالك، وبحث يوتيوب اختياري.\n\n"
         "كل إعداد مستقل لكل مجموعة، وصلاحيات الإدارة تُفحص من تيليجرام قبل أي إجراء."
     )
 
@@ -898,6 +964,190 @@ async def del_command_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     with db.connect() as conn:
         conn.execute("DELETE FROM custom_commands WHERE chat_id=? AND command=?", (update.effective_chat.id, normalize(context.args[0]).lstrip("/")))
     await update.effective_message.reply_text("تم حذف الأمر إن كان موجوداً.")
+
+
+def games_menu_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎲 نرد", callback_data="games:dice"), InlineKeyboardButton("🪙 عملة", callback_data="games:coin")],
+        [InlineKeyboardButton("🎰 سلوت", callback_data="games:slots"), InlineKeyboardButton("🔮 حظ", callback_data="games:fortune")],
+        [InlineKeyboardButton("🪨 حجر ورق مقص", callback_data="games:rps"), InlineKeyboardButton("🧠 سؤال", callback_data="games:quiz")],
+        [InlineKeyboardButton("🧠 صراحة", callback_data="games:truth"), InlineKeyboardButton("🎯 تحدي", callback_data="games:dare")],
+        [InlineKeyboardButton("🏆 المتصدرون", callback_data="games:leaderboard"), InlineKeyboardButton("💰 نقاطي", callback_data="games:points")],
+    ])
+
+
+async def games_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_message.reply_text("🎮 مركز ألعاب شهاب\\n\\nاختر لعبة أو اكتب أحد الأوامر العربية: نرد، عملة، حجر ورق مقص، سؤال، نقاطي، اليومية، المتصدرين.", reply_markup=games_menu_markup())
+
+
+async def points_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    profile = db.game_profile(chat.id, user.id)
+    achievements = db.achievements(chat.id, user.id)
+    await update.effective_message.reply_text(f"💰 ملف {user.first_name}\\nالنقاط: {profile['coins']}\\nالألعاب: {profile['games']}\\nالفوز: {profile['wins']}\\nالخسارة: {profile['losses']}\\nالإنجازات: {', '.join(achievements) if achievements else 'لا توجد بعد'}")
+
+
+async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    ok, profile = db.daily_reward(chat.id, user.id, datetime.now(timezone.utc).date().isoformat())
+    if ok:
+        unlocked = db.add_achievement(chat.id, user.id, "جامع اليومية")
+        await update.effective_message.reply_text(f"🎁 استلمت مكافأتك اليومية: +100 نقطة\\nرصيدك الآن: {profile['coins']}" + ("\\n🏅 إنجاز جديد: جامع اليومية" if unlocked else ""))
+    else:
+        await update.effective_message.reply_text(f"⏳ استلمت اليومية مسبقاً. رصيدك الحالي: {profile['coins']}")
+
+
+async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    rows = db.leaderboard(chat.id)
+    if not rows:
+        await update.effective_message.reply_text("🏆 لا توجد نتائج بعد. ابدأ بلعبة أو استلم اليومية.")
+        return
+    lines = [f"{index}. {row['first_name'] or row['user_id']} — {row['coins']} نقطة | فوز {row['wins']}" for index, row in enumerate(rows, 1)]
+    await update.effective_message.reply_text("🏆 متصدرون المجموعة\\n\\n" + "\\n".join(lines))
+
+
+async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    value = random.randint(1, 6)
+    delta = 15 if value == 6 else 3
+    profile = db.record_game(chat.id, user.id, value == 6, delta)
+    if value == 6:
+        db.add_achievement(chat.id, user.id, "ضربة النرد")
+    await update.effective_message.reply_text(f"🎲 النتيجة: {value}\\n{'ممتاز! +15 نقطة' if value == 6 else f'+{delta} نقاط للمشاركة'}\\nرصيدك: {profile['coins']}")
+
+
+async def slots_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    symbols = ("🍒", "🍋", "⭐", "💎", "7️⃣")
+    result = [random.choice(symbols) for _ in range(3)]
+    if len(set(result)) == 1:
+        delta, won = 100, True
+        message = "🎰 جاكبوت!"
+        db.add_achievement(chat.id, user.id, "ملك السلوت")
+    elif len(set(result)) == 2:
+        delta, won = 25, True
+        message = "🎰 تطابق جميل!"
+    else:
+        delta, won = -3, False
+        message = "🎰 حظ أوفر في المرة القادمة."
+    profile = db.record_game(chat.id, user.id, won, delta)
+    await update.effective_message.reply_text(f"{' | '.join(result)}\\n{message}\\nالنقاط: {delta:+d}\\nرصيدك: {profile['coins']}")
+
+
+async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    fortunes = ("اليوم مناسب لبداية جديدة.", "رسالة جميلة ستصل إليك قريباً.", "الهدوء سيجعلك ترى الحل بوضوح.", "فرصة صغيرة قد تتحول إلى إنجاز كبير.", "لا تؤجل الفكرة التي تستطيع تنفيذها الآن.")
+    await update.effective_message.reply_text("🔮 حظك اليوم:\\n" + random.choice(fortunes))
+
+
+async def truth_dare_command(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str) -> None:
+    truth = ("ما أكثر شيء تفتخر أنك تعلمته؟", "ما هدفك الذي تعمل عليه حالياً؟", "من أكثر شخص يلهمك؟", "ما عادة تتمنى تغييرها؟")
+    dare = ("اكتب جملة إيجابية عن شخص في المجموعة.", "أرسل أول ملصق يظهر في لوحة الملصقات لديك.", "اكتب هدفاً صغيراً تنجزه اليوم.", "قل نكتة قصيرة بدون إساءة.")
+    await update.effective_message.reply_text(("🧠 صراحة: " if mode == "truth" else "🎯 تحدي: ") + random.choice(truth if mode == "truth" else dare))
+
+
+async def coin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    result = random.choice(("وجه", "كتابة"))
+    profile = db.record_game(chat.id, user.id, True, GAME_REWARDS["draw"])
+    await update.effective_message.reply_text(f"🪙 النتيجة: {result}\\n+{GAME_REWARDS['draw']} نقاط\\nرصيدك: {profile['coins']}")
+
+
+async def rps_command(update: Update, context: ContextTypes.DEFAULT_TYPE, choice: str | None = None) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    choice = normalize(choice or "")
+    if choice not in RPS_CHOICES:
+        await update.effective_message.reply_text("اختر: حجر، ورق، أو مقص.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🪨 حجر", callback_data="games:rps:حجر"), InlineKeyboardButton("📄 ورق", callback_data="games:rps:ورق"), InlineKeyboardButton("✂️ مقص", callback_data="games:rps:مقص")]]))
+        return
+    bot_choice = random.choice(tuple(RPS_CHOICES))
+    if choice == bot_choice:
+        result, delta, won = "تعادل", GAME_REWARDS["draw"], True
+    elif RPS_BEATS[choice] == bot_choice:
+        result, delta, won = "فزت", GAME_REWARDS["win"], True
+    else:
+        result, delta, won = "خسرت", GAME_REWARDS["loss"], False
+    profile = db.record_game(chat.id, user.id, won, delta)
+    if won and result == "فزت":
+        db.add_achievement(chat.id, user.id, "بطل المقص")
+    await update.effective_message.reply_text(f"🪨 اختيارك: {RPS_CHOICES[choice]} {choice}\\n🤖 اختيار شهاب: {RPS_CHOICES[bot_choice]} {bot_choice}\\n\\nالنتيجة: {result}\\nالنقاط: {delta:+d}\\nرصيدك: {profile['coins']}")
+
+
+async def quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    question, answer = random.choice(QUIZ_BANK)
+    context.chat_data["active_quiz"] = {"question": question, "answer": normalize(answer), "expires": asyncio.get_running_loop().time() + 45}
+    await update.effective_message.reply_text(f"🧠 سؤال سريع\\n\\n{question}\\n\\nأرسل: إجابة جوابك\\nالوقت: 45 ثانية")
+
+
+async def answer_quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE, answer: str) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    game = context.chat_data.get("active_quiz")
+    if not chat or not user or not game:
+        await update.effective_message.reply_text("لا يوجد سؤال نشط الآن. اكتب: سؤال")
+        return
+    if asyncio.get_running_loop().time() > game["expires"]:
+        context.chat_data.pop("active_quiz", None)
+        await update.effective_message.reply_text("انتهى وقت السؤال. اكتب سؤالاً جديداً.")
+        return
+    if normalize(answer) != game["answer"]:
+        await update.effective_message.reply_text("ليست الإجابة الصحيحة، حاول مرة أخرى.")
+        return
+    context.chat_data.pop("active_quiz", None)
+    profile = db.record_game(chat.id, user.id, True, 35)
+    unlocked = db.add_achievement(chat.id, user.id, "عبقري الأسئلة")
+    await update.effective_message.reply_text(f"✅ إجابة صحيحة يا {user.first_name}! +35 نقطة\\nرصيدك: {profile['coins']}" + ("\\n🏅 إنجاز جديد: عبقري الأسئلة" if unlocked else ""))
+
+
+async def guess_command(update: Update, context: ContextTypes.DEFAULT_TYPE, guess: str | None = None) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    games = context.chat_data.setdefault("guess_games", {})
+    if not guess:
+        target = random.randint(1, 5)
+        games[str(user.id)] = {"target": target, "expires": asyncio.get_running_loop().time() + 30}
+        await update.effective_message.reply_text("🔢 خمن رقماً من 1 إلى 5 خلال 30 ثانية: اكتب خمن 3")
+        return
+    game = games.get(str(user.id))
+    if not game or asyncio.get_running_loop().time() > game["expires"]:
+        games.pop(str(user.id), None)
+        await update.effective_message.reply_text("لا توجد محاولة نشطة. اكتب: خمن")
+        return
+    try:
+        value = int(guess)
+    except ValueError:
+        await update.effective_message.reply_text("اكتب رقماً من 1 إلى 5.")
+        return
+    games.pop(str(user.id), None)
+    won = value == game["target"]
+    delta = 30 if won else -3
+    profile = db.record_game(chat.id, user.id, won, delta)
+    result_text = "🎉 أصبت!" if won else f"لم تصب. الرقم كان {game['target']}"
+    await update.effective_message.reply_text(f"{result_text}\\nالنقاط: {delta:+d}\\nرصيدك: {profile['coins']}")
 
 
 async def identity_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1287,6 +1537,54 @@ async def natural_language_handler(update: Update, context: ContextTypes.DEFAULT
     if raw in ("تصفير التحذيرات", "مسح التحذيرات", "الغاء التحذيرات", "إلغاء التحذيرات"):
         await reset_warns_command(update, context)
         return
+
+    # الألعاب والتفاعل والنقاط.
+    if raw in ("ألعاب", "العاب", "الألعاب", "مركز الألعاب"):
+        await games_command(update, context)
+        return
+    if raw in ("نقاطي", "نقاط", "رصيدي", "ملفي"):
+        await points_command(update, context)
+        return
+    if raw in ("اليومية", "يومية", "المكافأة اليومية"):
+        await daily_command(update, context)
+        return
+    if raw in ("المتصدرين", "المتصدرون", "الترتيب", "اللوحة"):
+        await leaderboard_command(update, context)
+        return
+    if verb in ("نرد", "ارم", "ارمي"):
+        await dice_command(update, context)
+        return
+    if verb in ("عملة", "العملة"):
+        await coin_command(update, context)
+        return
+    if verb in ("سلوت", "سلوتس", "ماكينة"):
+        await slots_command(update, context)
+        return
+    if raw in ("حظي", "الحظ", "حظ"):
+        await fortune_command(update, context)
+        return
+    if verb in ("صراحة", "صراحه"):
+        await truth_dare_command(update, context, "truth")
+        return
+    if verb in ("تحدي", "تحد"):
+        await truth_dare_command(update, context, "dare")
+        return
+    if raw in ("حجر ورق مقص", "حجر ورق او مقص", "حجر ورق أو مقص"):
+        await rps_command(update, context)
+        return
+    if verb in ("حجر", "ورق", "مقص"):
+        await rps_command(update, context, verb)
+        return
+    if raw in ("سؤال", "سؤال سريع", "مسابقة"):
+        await quiz_command(update, context)
+        return
+    if verb in ("إجابة", "اجابة", "جواب"):
+        await answer_quiz_command(update, context, rest)
+        return
+    if verb in ("خمن", "خمنها", "تخمين"):
+        await guess_command(update, context, rest or None)
+        return
+
     if raw in ("لوحة المالك", "لوحة المطور", "لوحة التحكم"):
         await owner_panel(update, context)
         return
@@ -1555,7 +1853,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
     data = query.data or ""
     user_id = query.from_user.id
-    if data == "home:commands":
+    if data == "games:menu":
+        await query.edit_message_text("🎮 مركز ألعاب شهاب\\n\\nاختر لعبة:", reply_markup=games_menu_markup())
+    elif data == "games:dice":
+        await dice_command(update, context)
+    elif data == "games:coin":
+        await coin_command(update, context)
+    elif data == "games:slots":
+        await slots_command(update, context)
+    elif data == "games:fortune":
+        await fortune_command(update, context)
+    elif data == "games:truth":
+        await truth_dare_command(update, context, "truth")
+    elif data == "games:dare":
+        await truth_dare_command(update, context, "dare")
+    elif data == "games:rps":
+        await rps_command(update, context)
+    elif data.startswith("games:rps:"):
+        await rps_command(update, context, data.split(":", 2)[2])
+    elif data == "games:quiz":
+        await quiz_command(update, context)
+    elif data == "games:leaderboard":
+        await leaderboard_command(update, context)
+    elif data == "games:points":
+        await points_command(update, context)
+    elif data == "home:commands":
         await query.edit_message_text(commands_text(), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data="home:main")]]))
     elif data == "home:services":
         await query.edit_message_text(services_text(), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data="home:main")]]))
@@ -1624,6 +1946,19 @@ def add_handlers(app: Application) -> None:
     app.add_handler(CommandHandler(["whisper"], whisper_command))
     app.add_handler(CommandHandler(["search"], search_command))
     app.add_handler(CommandHandler(["yt"], youtube_command))
+    app.add_handler(CommandHandler(["games"], games_command))
+    app.add_handler(CommandHandler(["points"], points_command))
+    app.add_handler(CommandHandler(["daily"], daily_command))
+    app.add_handler(CommandHandler(["leaderboard", "top"], leaderboard_command))
+    app.add_handler(CommandHandler(["dice"], dice_command))
+    app.add_handler(CommandHandler(["coin"], coin_command))
+    app.add_handler(CommandHandler(["slots"], slots_command))
+    app.add_handler(CommandHandler(["fortune"], fortune_command))
+    app.add_handler(CommandHandler(["truth"], lambda u, c: truth_dare_command(u, c, "truth")))
+    app.add_handler(CommandHandler(["dare"], lambda u, c: truth_dare_command(u, c, "dare")))
+    app.add_handler(CommandHandler(["rps"], lambda u, c: rps_command(u, c, " ".join(c.args) if c.args else None)))
+    app.add_handler(CommandHandler(["quiz"], quiz_command))
+    app.add_handler(CommandHandler(["guess"], lambda u, c: guess_command(u, c, c.args[0] if c.args else None)))
     app.add_handler(CommandHandler(["owner", "panel"], owner_panel))
     app.add_handler(CommandHandler(["broadcast"], broadcast_command))
     app.add_handler(CallbackQueryHandler(button_handler))
@@ -1647,7 +1982,7 @@ if __name__ == "__main__":
     try:
         application = build_app()
         logger.info("بوت شهاب جاهز للعمل")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        application.run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1, drop_pending_updates=False)
     except KeyboardInterrupt:
         logger.info("تم إيقاف البوت")
     except Exception as exc:
