@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import re
+import shutil
 import sqlite3
 import tempfile
 from datetime import datetime, timezone
@@ -148,6 +149,15 @@ QUIZ_BANK = [
     ("كم يساوي 6 × 7؟", "42"),
 ]
 GAME_REWARDS = {"win": 25, "loss": -5, "draw": 5}
+ROLE_LEVELS = ((0, "عضو"), (100, "مميز"), (300, "أدمن"), (700, "مدير"), (1500, "مشرف عام"))
+XP_PER_MESSAGE = 2
+XP_COOLDOWN_SECONDS = 30
+TREASURE_REWARDS = (25, 40, 60, 100, 150)
+SHOP_ITEMS = {
+    "درع": (250, "يحمي من خصم أول مخالفة في المجموعة"),
+    "لقب": (500, "لقب مميز قابل للتخصيص"),
+    "تذكرة": (100, "تذكرة سحب يومية"),
+}
 
 
 def utc_now() -> str:
@@ -275,6 +285,23 @@ class Database:
                     created_at TEXT NOT NULL
                 );
                 """
+            )
+            # Migrations keep existing installations compatible with the new economy system.
+            for column, definition in (
+                ("bank", "INTEGER NOT NULL DEFAULT 0"),
+                ("xp", "INTEGER NOT NULL DEFAULT 0"),
+                ("reputation", "INTEGER NOT NULL DEFAULT 100"),
+                ("last_xp", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE game_stats ADD COLUMN {column} {definition}")
+                except sqlite3.OperationalError:
+                    pass
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS inventory (chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, item TEXT NOT NULL, quantity INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(chat_id,user_id,item))"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS economy_transfers (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, sender_id INTEGER NOT NULL, receiver_id INTEGER NOT NULL, amount INTEGER NOT NULL, created_at TEXT NOT NULL)"
             )
 
     def register(self, user_id: int | None, first_name: str | None, username: str | None, chat_id: int | None, chat_title: str | None) -> None:
@@ -509,6 +536,70 @@ class Database:
             conn.execute("UPDATE game_stats SET coins=coins+100,last_daily=?,updated_at=? WHERE chat_id=? AND user_id=?", (today, utc_now(), chat_id, user_id))
             return True, conn.execute("SELECT * FROM game_stats WHERE chat_id=? AND user_id=?", (chat_id, user_id)).fetchone()
 
+    def add_xp(self, chat_id: int, user_id: int, amount: int, now_ts: int) -> tuple[sqlite3.Row, str | None]:
+        with self.connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO game_stats(chat_id,user_id,updated_at) VALUES(?,?,?)", (chat_id, user_id, utc_now()))
+            row = conn.execute("SELECT * FROM game_stats WHERE chat_id=? AND user_id=?", (chat_id, user_id)).fetchone()
+            if int(row["last_xp"] or 0) + XP_COOLDOWN_SECONDS > now_ts:
+                return row, None
+            old_level = max((name for threshold, name in ROLE_LEVELS if int(row["xp"] or 0) >= threshold), key=lambda name: next(t for t, n in ROLE_LEVELS if n == name))
+            new_xp = int(row["xp"] or 0) + max(0, amount)
+            conn.execute("UPDATE game_stats SET xp=?, last_xp=?, updated_at=? WHERE chat_id=? AND user_id=?", (new_xp, now_ts, utc_now(), chat_id, user_id))
+            updated = conn.execute("SELECT * FROM game_stats WHERE chat_id=? AND user_id=?", (chat_id, user_id)).fetchone()
+            new_level = max((name for threshold, name in ROLE_LEVELS if new_xp >= threshold), key=lambda name: next(t for t, n in ROLE_LEVELS if n == name))
+            return updated, new_level if new_level != old_level else None
+
+    def economy_profile(self, chat_id: int, user_id: int) -> sqlite3.Row:
+        return self.game_profile(chat_id, user_id)
+
+    def adjust_wallet(self, chat_id: int, user_id: int, amount: int, from_bank: bool = False) -> sqlite3.Row | None:
+        field = "bank" if from_bank else "coins"
+        with self.connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO game_stats(chat_id,user_id,updated_at) VALUES(?,?,?)", (chat_id, user_id, utc_now()))
+            row = conn.execute("SELECT * FROM game_stats WHERE chat_id=? AND user_id=?", (chat_id, user_id)).fetchone()
+            if int(row[field] or 0) + amount < 0:
+                return None
+            conn.execute(f"UPDATE game_stats SET {field}={field}+?,updated_at=? WHERE chat_id=? AND user_id=?", (amount, utc_now(), chat_id, user_id))
+            return conn.execute("SELECT * FROM game_stats WHERE chat_id=? AND user_id=?", (chat_id, user_id)).fetchone()
+
+    def transfer_coins(self, chat_id: int, sender_id: int, receiver_id: int, amount: int) -> bool:
+        if amount <= 0 or sender_id == receiver_id:
+            return False
+        with self.connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO game_stats(chat_id,user_id,updated_at) VALUES(?,?,?)", (chat_id, sender_id, utc_now()))
+            conn.execute("INSERT OR IGNORE INTO game_stats(chat_id,user_id,updated_at) VALUES(?,?,?)", (chat_id, receiver_id, utc_now()))
+            sender = conn.execute("SELECT coins FROM game_stats WHERE chat_id=? AND user_id=?", (chat_id, sender_id)).fetchone()
+            if not sender or int(sender["coins"]) < amount:
+                return False
+            conn.execute("UPDATE game_stats SET coins=coins-?,updated_at=? WHERE chat_id=? AND user_id=?", (amount, utc_now(), chat_id, sender_id))
+            conn.execute("UPDATE game_stats SET coins=coins+?,updated_at=? WHERE chat_id=? AND user_id=?", (amount, utc_now(), chat_id, receiver_id))
+            conn.execute("INSERT INTO economy_transfers(chat_id,sender_id,receiver_id,amount,created_at) VALUES(?,?,?,?,?)", (chat_id, sender_id, receiver_id, amount, utc_now()))
+            return True
+
+    def buy_item(self, chat_id: int, user_id: int, item: str, price: int) -> bool:
+        with self.connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO game_stats(chat_id,user_id,updated_at) VALUES(?,?,?)", (chat_id, user_id, utc_now()))
+            row = conn.execute("SELECT coins FROM game_stats WHERE chat_id=? AND user_id=?", (chat_id, user_id)).fetchone()
+            if not row or int(row["coins"]) < price:
+                return False
+            conn.execute("UPDATE game_stats SET coins=coins-?,updated_at=? WHERE chat_id=? AND user_id=?", (price, utc_now(), chat_id, user_id))
+            conn.execute("INSERT INTO inventory(chat_id,user_id,item,quantity) VALUES(?,?,?,1) ON CONFLICT(chat_id,user_id,item) DO UPDATE SET quantity=quantity+1", (chat_id, user_id, item))
+            return True
+
+    def inventory_items(self, chat_id: int, user_id: int) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute("SELECT item,quantity FROM inventory WHERE chat_id=? AND user_id=? AND quantity>0 ORDER BY item", (chat_id, user_id)).fetchall()
+
+    def change_reputation(self, chat_id: int, user_id: int, delta: int) -> int:
+        with self.connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO game_stats(chat_id,user_id,updated_at) VALUES(?,?,?)", (chat_id, user_id, utc_now()))
+            conn.execute("UPDATE game_stats SET reputation=MIN(100,MAX(0,reputation+?)),updated_at=? WHERE chat_id=? AND user_id=?", (delta, utc_now(), chat_id, user_id))
+            return int(conn.execute("SELECT reputation FROM game_stats WHERE chat_id=? AND user_id=?", (chat_id, user_id)).fetchone()["reputation"])
+
+    def economy_leaderboard(self, chat_id: int, limit: int = 10) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute("SELECT g.*,u.first_name,u.username FROM game_stats g LEFT JOIN users u ON u.user_id=g.user_id WHERE g.chat_id=? ORDER BY (g.coins+g.bank) DESC,g.xp DESC LIMIT ?", (chat_id, limit)).fetchall()
+
     def leaderboard(self, chat_id: int, limit: int = 10) -> list[sqlite3.Row]:
         with self.connect() as conn:
             return conn.execute("SELECT g.*,u.first_name,u.username FROM game_stats g LEFT JOIN users u ON u.user_id=g.user_id WHERE g.chat_id=? ORDER BY g.coins DESC,g.wins DESC LIMIT ?", (chat_id, limit)).fetchall()
@@ -683,7 +774,10 @@ def commands_text() -> str:
         "رفع مشرف، إزالة مشرف، تغيير رتبة مدير، المشرفين، المميزين، صلاحياتي، معلومات المجموعة.\n"
         "بحث اسم الفيديو، يوت رابط الفيديو، قفل الصور، فتح الروابط، تفعيل الترحيب، تعطيل التكرار.\n"
         "ألعاب: ألعاب، نرد، عملة، حجر ورق مقص، سؤال، إجابة جوابك، خمن، نقاطي، اليومية، المتصدرين.\n\n"
-        "بدون شرطة مائلة أيضاً: قفل الروابط، فتح الصور، تفعيل الترحيب، تعطيل التكرار."
+        "بدون شرطة مائلة أيضاً: قفل الروابط، فتح الصور، تفعيل الترحيب، تعطيل التكرار.\n\n"
+        "الاقتصاد: ملفي، بنك إيداع 100، بنك سحب 100، متجر، شراء درع، حقيبتي، تحويل 50، أغنى، سمعتي.\n"
+        "المميزات الجديدة: كنز، معركة، كلمات، كلمة جوابك، وخبرة ترفع الرتبة تلقائياً.\n"
+        "رتب متقدمة: الملك المطلق، مالك أساسي، مالك، مشرف عام، نائب، مشرف صامت، مدير، ادمن، مميز.\n"
     )
 
 
@@ -691,7 +785,7 @@ def services_text() -> str:
     return (
         "خدمات شهاب\n\n"
         "حماية الروابط والسبام، منع أنواع الوسائط، نظام التحذيرات، الكتم المؤقت، السجن، الترحيب، القوانين، الردود المخصصة، الأوامر المخصصة، معلومات الأعضاء، مركز ألعاب، نقاط، يومية، متصدرين، إنجازات، لوحة المالك، وبحث يوتيوب اختياري.\n\n"
-        "كل إعداد مستقل لكل مجموعة، وصلاحيات الإدارة تُفحص من تيليجرام قبل أي إجراء."
+        "كل إعداد مستقل لكل مجموعة، وصلاحيات الإدارة تُفحص من تيليجرام قبل أي إجراء. أضيفت الآن محفظة وبنك ومتجر وتحويلات، سمعة وخبرة، حماية ذكية من السبام، كنز، معركة، وكلمة يومية."
     )
 
 
@@ -966,6 +1060,223 @@ async def del_command_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.effective_message.reply_text("تم حذف الأمر إن كان موجوداً.")
 
 
+def level_for_xp(xp: int) -> str:
+    current = "عضو"
+    for threshold, name in ROLE_LEVELS:
+        if xp >= threshold:
+            current = name
+    return current
+
+
+def parse_amount(raw: str, available: int | None = None) -> int | None:
+    value = normalize(raw)
+    if value in ("الكل", "كل", "all") and available is not None:
+        return max(0, available)
+    try:
+        amount = int(value)
+    except (TypeError, ValueError):
+        return None
+    return amount if amount > 0 else None
+
+
+async def economy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    profile = db.economy_profile(chat.id, user.id)
+    items = db.inventory_items(chat.id, user.id)
+    rank = db.get_rank(chat.id, user.id) or level_for_xp(int(profile["xp"] or 0))
+    item_text = ", ".join(f"{row['item']} ×{row['quantity']}" for row in items) or "لا يوجد"
+    await update.effective_message.reply_text(
+        f"👤 ملف {user.first_name}\n\n💰 المحفظة: {profile['coins']} شهاب\n🏦 البنك: {profile['bank']} شهاب\n⭐ الخبرة: {profile['xp']}\n🏅 الرتبة: {rank}\n🤝 السمعة: {profile['reputation']}/100\n🎮 الألعاب: {profile['games']} | الفوز: {profile['wins']}\n🎒 الحقيبة: {item_text}"
+    )
+
+
+async def bank_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    args = context.args or ((update.effective_message.text or "").split()[1:] if update.effective_message and update.effective_message.text else [])
+    action = normalize(args[0]) if args else ""
+    profile = db.economy_profile(chat.id, user.id)
+    if action in ("إيداع", "ايداع", "deposit"):
+        amount = parse_amount(args[1] if len(args) > 1 else "", int(profile["coins"]))
+        if not amount or amount > int(profile["coins"]):
+            await update.effective_message.reply_text("استخدم: بنك إيداع 100 — أو بنك إيداع الكل")
+            return
+        db.adjust_wallet(chat.id, user.id, -amount)
+        profile = db.adjust_wallet(chat.id, user.id, amount, from_bank=True)
+        await update.effective_message.reply_text(f"🏦 تم إيداع {amount} شهاب. رصيد البنك: {profile['bank']}")
+        return
+    if action in ("سحب", "اسحب", "withdraw"):
+        amount = parse_amount(args[1] if len(args) > 1 else "", int(profile["bank"]))
+        if not amount or amount > int(profile["bank"]):
+            await update.effective_message.reply_text("استخدم: بنك سحب 100 — أو بنك سحب الكل")
+            return
+        db.adjust_wallet(chat.id, user.id, -amount, from_bank=True)
+        profile = db.adjust_wallet(chat.id, user.id, amount)
+        await update.effective_message.reply_text(f"💳 تم سحب {amount} شهاب. رصيد المحفظة: {profile['coins']}")
+        return
+    await update.effective_message.reply_text(f"🏦 البنك\nالمحفظة: {profile['coins']}\nالبنك: {profile['bank']}\n\nالأوامر: بنك إيداع 100، بنك سحب 100")
+
+
+async def shop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat or not update.effective_user:
+        return
+    args = context.args or ((update.effective_message.text or "").split()[1:] if update.effective_message and update.effective_message.text else [])
+    if not args:
+        lines = ["🛍️ متجر شهاب", ""] + [f"{name} — {price} شهاب — {description}" for name, (price, description) in SHOP_ITEMS.items()]
+        lines.append("\nللشراء: شراء درع")
+        await update.effective_message.reply_text("\n".join(lines))
+        return
+    item = " ".join(args).strip()
+    if item not in SHOP_ITEMS:
+        await update.effective_message.reply_text("العنصر غير موجود. اكتب متجر لرؤية العناصر.")
+        return
+    price, description = SHOP_ITEMS[item]
+    if not db.buy_item(update.effective_chat.id, update.effective_user.id, item, price):
+        await update.effective_message.reply_text(f"رصيدك لا يكفي لشراء {item}. السعر: {price} شهاب.")
+        return
+    await update.effective_message.reply_text(f"✅ اشتريت {item} مقابل {price} شهاب. {description}")
+
+
+async def inventory_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    rows = db.inventory_items(chat.id, user.id)
+    await update.effective_message.reply_text("🎒 حقيبتي:\n" + ("\n".join(f"• {row['item']} ×{row['quantity']}" for row in rows) if rows else "فارغة حالياً."))
+
+
+@group_only
+async def transfer_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    args = context.args or ((update.effective_message.text or "").split()[1:] if update.effective_message and update.effective_message.text else [])
+    target = await target_from_reply(update, args[1:] if len(args) > 1 else [])
+    if not target:
+        await update.effective_message.reply_text("استخدم تحويل 100 بالرد على رسالة العضو.")
+        return
+    amount = parse_amount(args[0] if args else "")
+    if not amount or not db.transfer_coins(chat.id, user.id, target.id, amount):
+        await update.effective_message.reply_text("تعذر التحويل. تأكد من المبلغ ورصيدك وأنك لا تحوّل لنفسك.")
+        return
+    await update.effective_message.reply_text(f"💸 تم تحويل {amount} شهاب إلى {target.first_name}.")
+
+
+async def economy_top_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    rows = db.economy_leaderboard(chat.id)
+    if not rows:
+        await update.effective_message.reply_text("لا توجد أرصدة مسجلة بعد.")
+        return
+    lines = [f"{i}. {row['first_name'] or row['user_id']} — {int(row['coins']) + int(row['bank'])} شهاب | خبرة {row['xp']}" for i, row in enumerate(rows, 1)]
+    await update.effective_message.reply_text("🏆 أغنى أعضاء المجموعة:\n\n" + "\n".join(lines))
+
+
+async def reputation_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    profile = db.economy_profile(chat.id, user.id)
+    await update.effective_message.reply_text(f"🤝 سمعة {user.first_name}: {profile['reputation']}/100\nترتفع بالمشاركة والالتزام وتنخفض عند المخالفات.")
+
+
+@group_only
+async def treasure_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    treasure = context.chat_data.setdefault("treasure", {})
+    now = asyncio.get_running_loop().time()
+    last = float(treasure.get(str(user.id), 0))
+    if now - last < 3600:
+        minutes = max(1, int((3600 - (now - last)) / 60))
+        await update.effective_message.reply_text(f"🔍 الكنز يعود بعد {minutes} دقيقة.")
+        return
+    treasure[str(user.id)] = now
+    reward = random.choice(TREASURE_REWARDS)
+    profile = db.record_game(chat.id, user.id, True, reward)
+    db.add_achievement(chat.id, user.id, "صياد الكنوز")
+    await update.effective_message.reply_text(f"🎁 عثرت على كنز مخفي بقيمة {reward} شهاب!\nرصيدك: {profile['coins']}")
+
+
+@group_only
+async def battle_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    target = await target_from_reply(update)
+    if not target or target.id == user.id:
+        await update.effective_message.reply_text("اكتب معركة بالرد على رسالة عضو آخر.")
+        return
+    mine = db.economy_profile(chat.id, user.id)
+    theirs = db.economy_profile(chat.id, target.id)
+    my_score = int(mine["xp"]) + random.randint(1, 100)
+    their_score = int(theirs["xp"]) + random.randint(1, 100)
+    if my_score == their_score:
+        await update.effective_message.reply_text(f"⚔️ تعادل بين {user.first_name} و{target.first_name}.")
+        return
+    winner, loser = (user, target) if my_score > their_score else (target, user)
+    db.record_game(chat.id, winner.id, True, 40)
+    db.record_game(chat.id, loser.id, False, -5)
+    await update.effective_message.reply_text(f"⚔️ انتهت المعركة!\nالفائز: {winner.first_name}\nالنتيجة: {max(my_score, their_score)} مقابل {min(my_score, their_score)}\nالمكافأة: +40 شهاب")
+
+
+async def word_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    words = (("مجرة", "مكان يضم نجوماً كثيرة"), ("برمجة", "كتابة تعليمات للحاسوب"), ("محيط", "مسطح مائي واسع جداً"), ("مكتبة", "مكان للكتب والمعرفة"))
+    word, clue = random.choice(words)
+    context.chat_data["active_word"] = {"word": normalize(word), "expires": asyncio.get_running_loop().time() + 60}
+    await update.effective_message.reply_text(f"📝 كلمة اليوم: {clue}\nأرسل: كلمة جوابك\nالوقت: 60 ثانية")
+
+
+async def answer_word_command(update: Update, context: ContextTypes.DEFAULT_TYPE, answer: str) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    game = context.chat_data.get("active_word")
+    if not chat or not user or not game:
+        await update.effective_message.reply_text("لا توجد كلمة نشطة. اكتب: كلمات")
+        return
+    if asyncio.get_running_loop().time() > game["expires"]:
+        context.chat_data.pop("active_word", None)
+        await update.effective_message.reply_text("انتهى وقت الكلمة. اكتب كلمات من جديد.")
+        return
+    if normalize(answer) != game["word"]:
+        await update.effective_message.reply_text("إجابة غير صحيحة، حاول مرة أخرى.")
+        return
+    context.chat_data.pop("active_word", None)
+    profile = db.record_game(chat.id, user.id, True, 45)
+    await update.effective_message.reply_text(f"✅ إجابة صحيحة يا {user.first_name}! +45 شهاب\nرصيدك: {profile['coins']}")
+
+
+async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await owner_only(update):
+        return
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    backup_dir = DB_PATH.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    target = backup_dir / f"shihab_{stamp}.db"
+    try:
+        shutil.copy2(DB_PATH, target)
+        await update.effective_message.reply_text(f"✅ تم إنشاء نسخة احتياطية محلية:\n{target.name}")
+    except OSError as exc:
+        logger.exception("Backup failed")
+        await update.effective_message.reply_text(f"تعذر إنشاء النسخة الاحتياطية: {exc}")
+
+
 def games_menu_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎲 نرد", callback_data="games:dice"), InlineKeyboardButton("🪙 عملة", callback_data="games:coin")],
@@ -973,6 +1284,8 @@ def games_menu_markup() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🪨 حجر ورق مقص", callback_data="games:rps"), InlineKeyboardButton("🧠 سؤال", callback_data="games:quiz")],
         [InlineKeyboardButton("🧠 صراحة", callback_data="games:truth"), InlineKeyboardButton("🎯 تحدي", callback_data="games:dare")],
         [InlineKeyboardButton("🏆 المتصدرون", callback_data="games:leaderboard"), InlineKeyboardButton("💰 نقاطي", callback_data="games:points")],
+        [InlineKeyboardButton("👤 ملفي الاقتصادي", callback_data="economy:profile"), InlineKeyboardButton("🛍️ المتجر", callback_data="economy:shop")],
+        [InlineKeyboardButton("🎁 بحث الكنز", callback_data="economy:treasure"), InlineKeyboardButton("🏆 أغنى الأعضاء", callback_data="economy:top")],
     ])
 
 
@@ -1199,9 +1512,17 @@ async def set_rank_command(update: Update, context: ContextTypes.DEFAULT_TYPE, r
     if not target:
         return
     chosen = (rank or (context.args[0] if context.args else "")).strip()
-    aliases = {"مدير": "مدير", "ادمن": "ادمن", "أدمن": "ادمن", "مميز": "مميز", "مشرف": "مشرف", "عضو": None, "حذف": None, "إزالة": None}
+    aliases = {
+        "الملك المطلق": "الملك المطلق", "ملك": "الملك المطلق", "مالك أساسي": "مالك أساسي", "المالك الأساسي": "مالك أساسي",
+        "مالك": "مالك", "مشرف عام": "مشرف عام", "نائب": "نائب", "مشرف صامت": "مشرف صامت",
+        "مدير": "مدير", "ادمن": "ادمن", "أدمن": "ادمن", "مميز": "مميز", "مشرف": "مشرف",
+        "عضو": None, "حذف": None, "إزالة": None,
+    }
     if chosen not in aliases:
-        await update.effective_message.reply_text("الرتب المتاحة: مدير، ادمن، مميز، مشرف، عضو.")
+        await update.effective_message.reply_text("الرتب المتاحة: الملك المطلق، مالك أساسي، مالك، مشرف عام، نائب، مشرف صامت، مدير، ادمن، مميز، عضو.")
+        return
+    if aliases[chosen] in {"الملك المطلق", "مالك أساسي", "مالك", "مشرف عام", "نائب"} and update.effective_user.id != OWNER_ID:
+        await update.effective_message.reply_text("هذه الرتبة العليا يعيّنها مالك البوت فقط.")
         return
     db.set_rank(update.effective_chat.id, target.id, aliases[chosen])
     await update.effective_message.reply_text(f"تم {'إزالة رتبة' if aliases[chosen] is None else 'تعيين رتبة ' + aliases[chosen]} لـ {target.first_name}.")
@@ -1379,6 +1700,24 @@ async def welcome_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await message.reply_text(text)
 
 
+def smart_spam_score(text: str) -> int:
+    value = text.strip()
+    if not value:
+        return 0
+    score = 0
+    if len(value) >= 700:
+        score += 2
+    if len(URL_RE.findall(value)) >= 3:
+        score += 2
+    if re.search(r"(.)\1{7,}", value):
+        score += 2
+    if len(value.split()) >= 80:
+        score += 1
+    if value.count("!") + value.count("؟") + value.count("?") >= 12:
+        score += 1
+    return score
+
+
 async def moderation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     chat = update.effective_chat
@@ -1386,6 +1725,10 @@ async def moderation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not message or not chat or not user or chat.type == ChatType.PRIVATE:
         return
     db.register(user.id, user.first_name, user.username, chat.id, chat.title or "")
+    if message.text and not message.text.startswith("/"):
+        profile, new_rank = db.add_xp(chat.id, user.id, XP_PER_MESSAGE, int(datetime.now(timezone.utc).timestamp()))
+        if new_rank and not await is_admin(update, user.id):
+            await message.reply_text(f"🏅 ترقية تلقائية! وصل {user.first_name} إلى رتبة {new_rank} بخبرة {profile['xp']}." )
     if user.id != OWNER_ID and db.is_global_banned(user.id):
         try:
             await chat.ban_member(user.id)
@@ -1411,6 +1754,8 @@ async def moderation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         blocked = "الدردشة"
     if protection_enabled and db.feature(chat.id, "antilink") and URL_RE.search(text):
         blocked = "الروابط"
+    if protection_enabled and db.feature(chat.id, "spam") and smart_spam_score(text) >= 3:
+        blocked = "الحماية الذكية من السبام"
     if protection_enabled and (db.feature(chat.id, "spam") or db.feature(chat.id, "antispam")):
         recent = context.chat_data.setdefault("recent_messages", {})
         stamp = normalize(text)
@@ -1426,6 +1771,7 @@ async def moderation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         blocked = "إضافة الأعضاء"
     if blocked:
         await safe_delete(message)
+        db.change_reputation(chat.id, user.id, -5)
         if db.feature(chat.id, "warn"):
             count = db.add_warning(chat.id, user.id)
             if count >= 3:
@@ -1542,8 +1888,29 @@ async def natural_language_handler(update: Update, context: ContextTypes.DEFAULT
     if raw in ("ألعاب", "العاب", "الألعاب", "مركز الألعاب"):
         await games_command(update, context)
         return
-    if raw in ("نقاطي", "نقاط", "رصيدي", "ملفي"):
+    if raw in ("نقاطي", "نقاط"):
         await points_command(update, context)
+        return
+    if raw in ("ملفي", "حسابي", "اقتصادي", "محفظتي", "محفظة"):
+        await economy_command(update, context)
+        return
+    if verb in ("بنك", "البنك"):
+        await bank_command(update, context)
+        return
+    if verb in ("متجر", "المتجر", "شراء"):
+        await shop_command(update, context)
+        return
+    if raw in ("حقيبتي", "المخزون", "ممتلكاتي"):
+        await inventory_command(update, context)
+        return
+    if verb in ("تحويل", "حول", "حوّل"):
+        await transfer_command(update, context)
+        return
+    if raw in ("أغنى", "الأغنياء", "متصدرين الاقتصاد"):
+        await economy_top_command(update, context)
+        return
+    if raw in ("سمعتي", "سمعة", "السمعة"):
+        await reputation_command(update, context)
         return
     if raw in ("اليومية", "يومية", "المكافأة اليومية"):
         await daily_command(update, context)
@@ -1583,6 +1950,18 @@ async def natural_language_handler(update: Update, context: ContextTypes.DEFAULT
         return
     if verb in ("خمن", "خمنها", "تخمين"):
         await guess_command(update, context, rest or None)
+        return
+    if raw in ("كنز", "بحث الكنز", "الكنز"):
+        await treasure_command(update, context)
+        return
+    if raw in ("معركة", "معركة البوتات", "قتال"):
+        await battle_command(update, context)
+        return
+    if raw in ("كلمات", "الكلمات المتقاطعة", "كلمة اليوم"):
+        await word_command(update, context)
+        return
+    if verb in ("كلمة", "جواب الكلمة"):
+        await answer_word_command(update, context, rest)
         return
 
     if raw in ("لوحة المالك", "لوحة المطور", "لوحة التحكم"):
@@ -1855,6 +2234,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = query.from_user.id
     if data == "games:menu":
         await query.edit_message_text("🎮 مركز ألعاب شهاب\\n\\nاختر لعبة:", reply_markup=games_menu_markup())
+    elif data == "economy:profile":
+        await economy_command(update, context)
+    elif data == "economy:shop":
+        await shop_command(update, context)
+    elif data == "economy:treasure":
+        await treasure_command(update, context)
+    elif data == "economy:top":
+        await economy_top_command(update, context)
     elif data == "games:dice":
         await dice_command(update, context)
     elif data == "games:coin":
@@ -1948,6 +2335,17 @@ def add_handlers(app: Application) -> None:
     app.add_handler(CommandHandler(["yt"], youtube_command))
     app.add_handler(CommandHandler(["games"], games_command))
     app.add_handler(CommandHandler(["points"], points_command))
+    app.add_handler(CommandHandler(["economy", "profile", "wallet"], economy_command))
+    app.add_handler(CommandHandler(["bank"], bank_command))
+    app.add_handler(CommandHandler(["shop"], shop_command))
+    app.add_handler(CommandHandler(["inventory"], inventory_command))
+    app.add_handler(CommandHandler(["transfer"], transfer_command))
+    app.add_handler(CommandHandler(["economytop"], economy_top_command))
+    app.add_handler(CommandHandler(["reputation"], reputation_command))
+    app.add_handler(CommandHandler(["treasure"], treasure_command))
+    app.add_handler(CommandHandler(["battle"], battle_command))
+    app.add_handler(CommandHandler(["words"], word_command))
+    app.add_handler(CommandHandler(["backup"], backup_command))
     app.add_handler(CommandHandler(["daily"], daily_command))
     app.add_handler(CommandHandler(["leaderboard", "top"], leaderboard_command))
     app.add_handler(CommandHandler(["dice"], dice_command))
