@@ -1262,6 +1262,111 @@ async def answer_word_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.effective_message.reply_text(f"✅ إجابة صحيحة يا {user.first_name}! +45 شهاب\nرصيدك: {profile['coins']}")
 
 
+async def poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    message = update.effective_message
+    if not chat or not message:
+        return
+    if chat.type != ChatType.PRIVATE and not await admin_required(update):
+        return
+    raw = " ".join(context.args).strip()
+    if not raw and message.text:
+        raw = message.text.split(maxsplit=1)[1].strip() if len(message.text.split(maxsplit=1)) > 1 else ""
+    parts = [part.strip() for part in raw.split("|") if part.strip()]
+    if len(parts) < 3:
+        await message.reply_text("استخدم: استطلاع السؤال | الخيار الأول | الخيار الثاني | خيار إضافي")
+        return
+    question, options = parts[0], parts[1:11]
+    try:
+        await context.bot.send_poll(chat_id=chat.id, question=question[:300], options=options, is_anonymous=False, allows_multiple_answers=False)
+    except TelegramError as exc:
+        await message.reply_text(f"تعذر إنشاء الاستطلاع: {exc}")
+
+
+@group_only
+async def pin_command(update: Update, context: ContextTypes.DEFAULT_TYPE, unpin: bool = False) -> None:
+    if not await admin_required(update):
+        return
+    message = update.effective_message
+    target = message.reply_to_message if message else None
+    if not target:
+        await message.reply_text("استخدم الأمر بالرد على الرسالة المراد تثبيتها.")
+        return
+    try:
+        if unpin:
+            await update.effective_chat.unpin_chat_message(target.message_id)
+            await message.reply_text("تم إلغاء تثبيت الرسالة.")
+        else:
+            await update.effective_chat.pin_message(target.message_id, disable_notification=True)
+            await message.reply_text("تم تثبيت الرسالة.")
+    except TelegramError as exc:
+        await message.reply_text(f"تعذر تعديل التثبيت: {exc}")
+
+
+@group_only
+async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat = update.effective_chat
+    if not message or not chat or not message.reply_to_message:
+        await message.reply_text("استخدم بلاغ بالرد على رسالة العضو.")
+        return
+    target = message.reply_to_message.from_user
+    reporter = update.effective_user
+    if not target or not reporter:
+        return
+    db.add_warning(chat.id, target.id)
+    admins = await chat.get_administrators()
+    admin_names = "، ".join(member.user.first_name for member in admins[:5]) or "المشرفين"
+    await message.reply_text(f"🚨 تم تسجيل بلاغ من {reporter.first_name} على رسالة {target.first_name}.\nسيظهر البلاغ للمشرفين: {admin_names}.")
+
+
+async def scheduled_message_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id, text = context.job.data
+    try:
+        await context.bot.send_message(chat_id=chat_id, text=f"⏰ تذكير مجدول:\n{text}")
+    except TelegramError:
+        logger.debug("Scheduled message failed", exc_info=True)
+
+
+@group_only
+async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE, raw_text: str | None = None) -> None:
+    if not await admin_required(update):
+        return
+    message = update.effective_message
+    raw = raw_text if raw_text is not None else " ".join(context.args).strip()
+    if raw_text is None and not raw and message and message.text:
+        raw = message.text.split(maxsplit=1)[1].strip() if len(message.text.split(maxsplit=1)) > 1 else ""
+    parts = raw.split(maxsplit=1)
+    try:
+        minutes = max(1, min(int(parts[0]), 10080))
+        text = parts[1].strip()
+    except (IndexError, ValueError):
+        await message.reply_text("استخدم: جدولة 30 نص التذكير")
+        return
+    if not context.job_queue:
+        await message.reply_text("خدمة الجدولة غير مثبتة في هذه البيئة. ثبّت python-telegram-bot[job-queue].")
+        return
+    context.job_queue.run_once(scheduled_message_job, minutes * 60, data=(update.effective_chat.id, text[:1000]), name=f"shihab:{update.effective_chat.id}:{asyncio.get_running_loop().time()}")
+    await message.reply_text(f"✅ تمت جدولة الرسالة بعد {minutes} دقيقة.")
+
+
+@group_only
+async def group_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    activity = context.chat_data.get("activity_counts", {})
+    total = sum(activity.values())
+    top = sorted(activity.items(), key=lambda item: item[1], reverse=True)[:5]
+    lines = []
+    for user_id, count in top:
+        try:
+            member = await chat.get_member(int(user_id))
+            name = member.user.first_name
+        except TelegramError:
+            name = str(user_id)
+        lines.append(f"• {name}: {count} رسالة")
+    await update.effective_message.reply_text(f"📊 إحصائيات نشاط المجموعة منذ آخر تشغيل:\nإجمالي الرسائل: {total}\nالأعضاء النشطون: {len(activity)}\n\n" + ("\n".join(lines) if lines else "لا توجد بيانات بعد."))
+
+
 async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await owner_only(update):
         return
@@ -1725,6 +1830,8 @@ async def moderation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not message or not chat or not user or chat.type == ChatType.PRIVATE:
         return
     db.register(user.id, user.first_name, user.username, chat.id, chat.title or "")
+    activity = context.chat_data.setdefault("activity_counts", {})
+    activity[str(user.id)] = int(activity.get(str(user.id), 0)) + 1
     if message.text and not message.text.startswith("/"):
         profile, new_rank = db.add_xp(chat.id, user.id, XP_PER_MESSAGE, int(datetime.now(timezone.utc).timestamp()))
         if new_rank and not await is_admin(update, user.id):
@@ -1912,6 +2019,12 @@ async def natural_language_handler(update: Update, context: ContextTypes.DEFAULT
     if raw in ("سمعتي", "سمعة", "السمعة"):
         await reputation_command(update, context)
         return
+    if verb in ("استطلاع", "تصويت"):
+        await poll_command(update, context)
+        return
+    if raw in ("إحصائيات المجموعة", "احصائيات المجموعة", "نشاط المجموعة", "الإحصائيات"):
+        await group_stats_command(update, context)
+        return
     if raw in ("اليومية", "يومية", "المكافأة اليومية"):
         await daily_command(update, context)
         return
@@ -1953,6 +2066,18 @@ async def natural_language_handler(update: Update, context: ContextTypes.DEFAULT
         return
     if raw in ("كنز", "بحث الكنز", "الكنز"):
         await treasure_command(update, context)
+        return
+    if verb in ("ثبت", "ثبّت", "تثبيت"):
+        await pin_command(update, context)
+        return
+    if verb in ("الغاء", "إلغاء") and rest in ("التثبيت", "تثبيت"):
+        await pin_command(update, context, True)
+        return
+    if verb in ("بلاغ", "بلغ", "بلّغ"):
+        await report_command(update, context)
+        return
+    if verb in ("جدولة", "ذكرني", "تذكير"):
+        await schedule_command(update, context, rest)
         return
     if raw in ("معركة", "معركة البوتات", "قتال"):
         await battle_command(update, context)
@@ -2346,6 +2471,12 @@ def add_handlers(app: Application) -> None:
     app.add_handler(CommandHandler(["battle"], battle_command))
     app.add_handler(CommandHandler(["words"], word_command))
     app.add_handler(CommandHandler(["backup"], backup_command))
+    app.add_handler(CommandHandler(["poll"], poll_command))
+    app.add_handler(CommandHandler(["pin"], pin_command))
+    app.add_handler(CommandHandler(["unpin"], lambda u, c: pin_command(u, c, True)))
+    app.add_handler(CommandHandler(["report"], report_command))
+    app.add_handler(CommandHandler(["schedule"], schedule_command))
+    app.add_handler(CommandHandler(["groupstats", "activity"], group_stats_command))
     app.add_handler(CommandHandler(["daily"], daily_command))
     app.add_handler(CommandHandler(["leaderboard", "top"], leaderboard_command))
     app.add_handler(CommandHandler(["dice"], dice_command))
