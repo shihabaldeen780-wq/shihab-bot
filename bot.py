@@ -303,6 +303,9 @@ class Database:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS economy_transfers (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, sender_id INTEGER NOT NULL, receiver_id INTEGER NOT NULL, amount INTEGER NOT NULL, created_at TEXT NOT NULL)"
             )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS message_activity (chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, message_count INTEGER NOT NULL DEFAULT 0, last_seen TEXT NOT NULL, PRIMARY KEY(chat_id,user_id))"
+            )
 
     def register(self, user_id: int | None, first_name: str | None, username: str | None, chat_id: int | None, chat_title: str | None) -> None:
         with self.connect() as conn:
@@ -596,6 +599,19 @@ class Database:
             conn.execute("UPDATE game_stats SET reputation=MIN(100,MAX(0,reputation+?)),updated_at=? WHERE chat_id=? AND user_id=?", (delta, utc_now(), chat_id, user_id))
             return int(conn.execute("SELECT reputation FROM game_stats WHERE chat_id=? AND user_id=?", (chat_id, user_id)).fetchone()["reputation"])
 
+    def record_activity(self, chat_id: int, user_id: int) -> None:
+        with self.connect() as conn:
+            conn.execute("INSERT INTO message_activity(chat_id,user_id,message_count,last_seen) VALUES(?,?,1,?) ON CONFLICT(chat_id,user_id) DO UPDATE SET message_count=message_count+1,last_seen=excluded.last_seen", (chat_id, user_id, utc_now()))
+
+    def activity_leaderboard(self, chat_id: int, limit: int = 10) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute("SELECT a.*,u.first_name,u.username FROM message_activity a LEFT JOIN users u ON u.user_id=a.user_id WHERE a.chat_id=? ORDER BY a.message_count DESC LIMIT ?", (chat_id, limit)).fetchall()
+
+    def activity_total(self, chat_id: int) -> int:
+        with self.connect() as conn:
+            row = conn.execute("SELECT COALESCE(SUM(message_count),0) AS total,COUNT(*) AS members FROM message_activity WHERE chat_id=?", (chat_id,)).fetchone()
+        return int(row["total"]), int(row["members"])
+
     def economy_leaderboard(self, chat_id: int, limit: int = 10) -> list[sqlite3.Row]:
         with self.connect() as conn:
             return conn.execute("SELECT g.*,u.first_name,u.username FROM game_stats g LEFT JOIN users u ON u.user_id=g.user_id WHERE g.chat_id=? ORDER BY (g.coins+g.bank) DESC,g.xp DESC LIMIT ?", (chat_id, limit)).fetchall()
@@ -767,6 +783,7 @@ def commands_text() -> str:
         "    /addreply كلمة | الرد  /replies  /delreply كلمة  /delallreplies\n"
         "/addcmd أمر | الرد  /delcmd أمر\n"
         "/id  /age  /bio  /services  /whisper\n"
+        "/poll سؤال | خيار 1 | خيار 2  /pin  /unpin  /report  /schedule 30 نص  /groupstats\n"
         "/search اسم فيديو  /yt رابط فيديو\n"
         "/games  /points  /daily  /leaderboard  /dice  /coin  /rps  /quiz  /guess\n\n"
         "أوامر عربية مباشرة داخل المجموعة:\n"
@@ -785,7 +802,7 @@ def services_text() -> str:
     return (
         "خدمات شهاب\n\n"
         "حماية الروابط والسبام، منع أنواع الوسائط، نظام التحذيرات، الكتم المؤقت، السجن، الترحيب، القوانين، الردود المخصصة، الأوامر المخصصة، معلومات الأعضاء، مركز ألعاب، نقاط، يومية، متصدرين، إنجازات، لوحة المالك، وبحث يوتيوب اختياري.\n\n"
-        "كل إعداد مستقل لكل مجموعة، وصلاحيات الإدارة تُفحص من تيليجرام قبل أي إجراء. أضيفت الآن محفظة وبنك ومتجر وتحويلات، سمعة وخبرة، حماية ذكية من السبام، كنز، معركة، وكلمة يومية."
+        "كل إعداد مستقل لكل مجموعة، وصلاحيات الإدارة تُفحص من تيليجرام قبل أي إجراء. أضيفت الآن محفظة وبنك ومتجر وتحويلات، سمعة وخبرة، حماية ذكية من السبام، كنز، معركة، كلمة يومية، استطلاعات، تثبيت، بلاغات، جدولة، إحصائيات نشاط، ونسخ احتياطي للمالك."
     )
 
 
@@ -1353,18 +1370,10 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE, r
 @group_only
 async def group_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
-    activity = context.chat_data.get("activity_counts", {})
-    total = sum(activity.values())
-    top = sorted(activity.items(), key=lambda item: item[1], reverse=True)[:5]
-    lines = []
-    for user_id, count in top:
-        try:
-            member = await chat.get_member(int(user_id))
-            name = member.user.first_name
-        except TelegramError:
-            name = str(user_id)
-        lines.append(f"• {name}: {count} رسالة")
-    await update.effective_message.reply_text(f"📊 إحصائيات نشاط المجموعة منذ آخر تشغيل:\nإجمالي الرسائل: {total}\nالأعضاء النشطون: {len(activity)}\n\n" + ("\n".join(lines) if lines else "لا توجد بيانات بعد."))
+    total, members = db.activity_total(chat.id)
+    rows = db.activity_leaderboard(chat.id)
+    lines = [f"• {row['first_name'] or row['user_id']}: {row['message_count']} رسالة" for row in rows]
+    await update.effective_message.reply_text(f"📊 إحصائيات نشاط المجموعة منذ أول تشغيل:\nإجمالي الرسائل: {total}\nالأعضاء النشطون: {members}\n\n" + ("\n".join(lines) if lines else "لا توجد بيانات بعد."))
 
 
 async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1830,8 +1839,7 @@ async def moderation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not message or not chat or not user or chat.type == ChatType.PRIVATE:
         return
     db.register(user.id, user.first_name, user.username, chat.id, chat.title or "")
-    activity = context.chat_data.setdefault("activity_counts", {})
-    activity[str(user.id)] = int(activity.get(str(user.id), 0)) + 1
+    db.record_activity(chat.id, user.id)
     if message.text and not message.text.startswith("/"):
         profile, new_rank = db.add_xp(chat.id, user.id, XP_PER_MESSAGE, int(datetime.now(timezone.utc).timestamp()))
         if new_rank and not await is_admin(update, user.id):
