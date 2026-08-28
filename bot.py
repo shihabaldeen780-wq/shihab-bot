@@ -751,10 +751,14 @@ async def admin_required(update: Update) -> bool:
     return False
 
 
-async def target_from_reply(update: Update, identifiers: list[str] | None = None) -> Any | None:
+async def target_from_reply(update: Update, identifiers: list[str] | None = None, require_reply: bool = False) -> Any | None:
     message = update.effective_message
     if message and message.reply_to_message and message.reply_to_message.from_user:
         return message.reply_to_message.from_user
+    if require_reply:
+        if message:
+            await message.reply_text("⚠️ نفّذ الأمر بالرد على رسالة العضو المطلوب فقط.")
+        return None
     for identifier in identifiers or []:
         row = db.find_user(identifier)
         if row:
@@ -945,7 +949,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def moderate(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, arabic_args: list[str] | None = None, target_override: Any | None = None) -> None:
     if not await admin_required(update):
         return
-    target = target_override or await target_from_reply(update, arabic_args if action != "mute" else None)
+    target = target_override or await target_from_reply(update, arabic_args if action != "mute" else None, require_reply=True)
     if not target:
         return
     if target.id == update.effective_user.id:
@@ -1001,7 +1005,7 @@ async def moderate(update: Update, context: ContextTypes.DEFAULT_TYPE, action: s
 async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await admin_required(update):
         return
-    target = await target_from_reply(update)
+    target = await target_from_reply(update, require_reply=True)
     if not target:
         return
     if await is_admin(update, target.id):
@@ -1020,7 +1024,7 @@ async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 @group_only
 async def warns_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    target = await target_from_reply(update)
+    target = await target_from_reply(update, require_reply=True)
     if target:
         count = db.warnings(update.effective_chat.id, target.id)
         await update.effective_message.reply_text(f"لدى {target.first_name} عدد {count} تحذير.")
@@ -1030,7 +1034,7 @@ async def warns_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def reset_warns_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await admin_required(update):
         return
-    target = await target_from_reply(update)
+    target = await target_from_reply(update, require_reply=True)
     if target:
         db.reset_warnings(update.effective_chat.id, target.id)
         await update.effective_message.reply_text(f"تم تصفير تحذيرات {target.first_name}.")
@@ -1039,14 +1043,15 @@ async def reset_warns_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat or update.effective_chat.type == ChatType.PRIVATE:
         return
-    if not await admin_required(update) or not context.args:
-        if not context.args and update.effective_message:
-            await update.effective_message.reply_text("استخدم /unban رقم_المستخدم.")
+    if not await admin_required(update):
+        return
+    target = await target_from_reply(update, require_reply=True)
+    if not target:
         return
     try:
-        await update.effective_chat.unban_member(int(context.args[0]))
-        await update.effective_message.reply_text("تم إلغاء الحظر.")
-    except (ValueError, TelegramError) as exc:
+        await update.effective_chat.unban_member(target.id)
+        await update.effective_message.reply_text("✅ تم إلغاء الحظر عن العضو الذي رددت على رسالته.")
+    except TelegramError as exc:
         await update.effective_message.reply_text(f"تعذر إلغاء الحظر: {exc}")
 
 
@@ -2121,19 +2126,12 @@ async def reply_engine(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def arabic_unban(update: Update, context: ContextTypes.DEFAULT_TYPE, rest: str) -> None:
     if not await admin_required(update):
         return
-    target_id: int | None = None
-    for token in reversed(rest.split()):
-        if token.isdigit():
-            target_id = int(token)
-            break
-    if target_id is None and update.effective_message.reply_to_message and update.effective_message.reply_to_message.from_user:
-        target_id = update.effective_message.reply_to_message.from_user.id
-    if target_id is None:
-        await update.effective_message.reply_text("استخدم: رفع الحظر بالرد على رسالة العضو أو اكتب رقم المعرف.")
+    target = await target_from_reply(update, require_reply=True)
+    if not target:
         return
     try:
-        await update.effective_chat.unban_member(target_id)
-        await update.effective_message.reply_text("تم رفع الحظر.")
+        await update.effective_chat.unban_member(target.id)
+        await update.effective_message.reply_text("✅ تم رفع الحظر عن العضو الذي رددت على رسالته.")
     except TelegramError as exc:
         await update.effective_message.reply_text(f"تعذر رفع الحظر: {exc}")
 
@@ -2163,14 +2161,14 @@ async def natural_language_handler(update: Update, context: ContextTypes.DEFAULT
         tokens = rest.split() if not phrase_action else []
         duration_args = [token for token in tokens if token.isdigit()][:1] if chosen_action == "mute" else None
         target_tokens = [token for token in tokens if token not in (duration_args or [])]
-        target = await target_from_reply(update, target_tokens)
+        target = await target_from_reply(update, target_tokens, require_reply=True)
         if target:
             await moderate(update, context, chosen_action, duration_args, target)
         return
     if verb in ("تحذير", "حذر", "حذّر"):
         if not await admin_required(update):
             return
-        target = await target_from_reply(update, rest.split())
+        target = await target_from_reply(update, rest.split(), require_reply=True)
         if target:
             original_reply = update.effective_message.reply_to_message
             if original_reply:
@@ -2576,6 +2574,9 @@ async def owner_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat or chat.type != ChatType.PRIVATE:
+        return
     if not await owner_only(update, notify=False):
         return
     await update.effective_message.reply_text(owner_dashboard_text(), reply_markup=owner_menu_markup())
@@ -2751,7 +2752,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         text, markup = settings_page(chat.id)
         await query.edit_message_text(text, reply_markup=markup)
     elif data.startswith("owner:"):
-        if user_id != OWNER_ID:
+        if user_id != OWNER_ID or not query.message or query.message.chat.type != ChatType.PRIVATE:
             return
         if data == "owner:groups":
             await query.edit_message_text(owner_groups_text(), reply_markup=owner_groups_markup())
