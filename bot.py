@@ -452,6 +452,10 @@ class Database:
             row = conn.execute("SELECT response FROM custom_commands WHERE chat_id=? AND command=?", (chat_id, normalize(command))).fetchone()
         return row["response"] if row else None
 
+    def delete_command(self, chat_id: int, command: str) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM custom_commands WHERE chat_id=? AND command=?", (chat_id, normalize(command)))
+
     def set_plan(self, chat_id: int, plan: str, days: int | None, actor_id: int) -> None:
         expires_at = int(datetime.now(timezone.utc).timestamp()) + days * 86400 if days else None
         with self.connect() as conn:
@@ -485,6 +489,10 @@ class Database:
             else:
                 rows = conn.execute("SELECT chat_id FROM groups_info").fetchall()
         return [int(row["chat_id"]) for row in rows]
+
+    def groups_info(self, limit: int = 50) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute("SELECT g.chat_id,g.title,COALESCE(p.plan,'free') AS plan,p.expires_at FROM groups_info g LEFT JOIN group_plans p ON p.chat_id=g.chat_id ORDER BY g.title COLLATE NOCASE LIMIT ?", (limit,)).fetchall()
 
     def set_rank(self, chat_id: int, user_id: int, rank: str | None) -> None:
         with self.connect() as conn:
@@ -2452,9 +2460,10 @@ async def owner_only(update: Update, notify: bool = True) -> bool:
 
 def owner_menu_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 الإحصائيات", callback_data="owner:stats"), InlineKeyboardButton("👥 المجموعات", callback_data="owner:groups")],
+        [InlineKeyboardButton("📊 الإحصائيات", callback_data="owner:stats"), InlineKeyboardButton("👥 إدارة المجموعات", callback_data="owner:groups")],
+        [InlineKeyboardButton("⚙️ إعدادات مجموعة", callback_data="owner:groups"), InlineKeyboardButton("🧩 الردود والمحتوى", callback_data="owner:replies")],
         [InlineKeyboardButton("🛡️ المساعدون", callback_data="owner:assistants"), InlineKeyboardButton("🚫 الحظر العام", callback_data="owner:bans")],
-        [InlineKeyboardButton("💾 نسخة احتياطية", callback_data="owner:backup"), InlineKeyboardButton("📖 طريقة الإدارة", callback_data="owner:help")],
+        [InlineKeyboardButton("💾 نسخة احتياطية", callback_data="owner:backup"), InlineKeyboardButton("📖 دليل المالك", callback_data="owner:help")],
         [InlineKeyboardButton("🔄 تحديث", callback_data="owner:home"), InlineKeyboardButton("إغلاق", callback_data="owner:close")],
     ])
 
@@ -2462,10 +2471,110 @@ def owner_menu_markup() -> InlineKeyboardMarkup:
 def owner_dashboard_text() -> str:
     stats = db.stats()
     plans = db.plan_counts()
-    return (f"لوحة مالك شهاب\n\nالمستخدمون: {stats['users']}\nالمجموعات: {stats['groups']}\n"
-            f"VIP: {plans.get('vip', 0)}\nعادية: {plans.get('free', 0)}\n"
+    return (f"🛡️ لوحة مالك شهاب\n━━━━━━━━━━━━━━━━━━\n"
+            f"المستخدمون: {stats['users']}\nالمجموعات: {stats['groups']}\n"
+            f"VIP: {plans.get('vip', 0)} | عادية: {plans.get('free', 0)}\n"
             f"المساعدون: {len(db.assistants())}\nالحظر العام: {len(db.global_bans())}\n"
-            f"الأحداث المسجلة: {stats['events']}\n\nاختر قسماً من الأزرار أو استخدم الأوامر العربية.")
+            f"الأحداث المسجلة: {stats['events']}\n\n"
+            "من هنا تتحكم بالمجموعات والمحتوى والنسخ الاحتياطية. كل إجراء محمي بحساب المالك فقط.")
+
+
+def owner_groups_markup() -> InlineKeyboardMarkup:
+    rows = []
+    groups = db.groups_info()
+    for index in range(0, len(groups), 2):
+        row = []
+        for group in groups[index:index + 2]:
+            title = str(group["title"] or group["chat_id"])[:22]
+            row.append(InlineKeyboardButton(f"{title} ({group['plan']})", callback_data=f"owner:group:{group['chat_id']}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton("🏠 لوحة المالك", callback_data="owner:home")])
+    return InlineKeyboardMarkup(rows)
+
+
+def owner_groups_text() -> str:
+    groups = db.groups_info()
+    if not groups:
+        return "👥 إدارة المجموعات\\n━━━━━━━━━━━━━━━━━━\\nلا توجد مجموعات مسجلة بعد. أضف البوت إلى مجموعة وابدأ استخدامه، ثم ستظهر هنا."
+    return "👥 إدارة المجموعات\\n━━━━━━━━━━━━━━━━━━\\nاختر مجموعة لعرض خطتها وتبديل ميزاتها من داخل لوحة المالك."
+
+
+def owner_group_text(chat_id: int) -> str:
+    plan, expires = db.plan_info(chat_id)
+    features = db.all_features(chat_id)
+    enabled = sum(1 for key, value in features.items() if key != "all" and value)
+    group = next((row for row in db.groups_info() if int(row["chat_id"]) == chat_id), None)
+    title = str(group["title"] if group else chat_id)
+    expiry = datetime.fromtimestamp(expires).strftime("%Y-%m-%d") if expires else "غير محدد"
+    return (f"⚙️ إعدادات المجموعة\\n━━━━━━━━━━━━━━━━━━\\nالمجموعة: {title}\\nالمعرف: {chat_id}\\n"
+            f"الخطة: {plan}\\nالانتهاء: {expiry}\\nالمفاتيح المفتوحة: {enabled}/{len(FEATURES) - 1}\\n\\n"
+            "اضغط على أي ميزة لتبديلها. لا تتغير صلاحيات تيليجرام من هنا؛ هذه إعدادات شهاب فقط.")
+
+
+def owner_group_markup(chat_id: int) -> InlineKeyboardMarkup:
+    features = db.all_features(chat_id)
+    keys = [key for key in FEATURES if key != "all"]
+    rows = []
+    for index in range(0, len(keys), 2):
+        row = []
+        for key in keys[index:index + 2]:
+            mark = "✅" if features.get(key, True) else "⛔"
+            row.append(InlineKeyboardButton(f"{mark} {FEATURES[key]}", callback_data=f"owner:gfeature:{chat_id}:{key}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton("VIP", callback_data=f"owner:gplan:{chat_id}:vip"), InlineKeyboardButton("عادية", callback_data=f"owner:gplan:{chat_id}:free")])
+    rows.append([InlineKeyboardButton("رجوع للمجموعات", callback_data="owner:groups"), InlineKeyboardButton("لوحة المالك", callback_data="owner:home")])
+    return InlineKeyboardMarkup(rows)
+
+
+def owner_replies_text() -> str:
+    return ("🧩 إدارة الردود والمحتوى\\n━━━━━━━━━━━━━━━━━━\\n"
+            "من هنا تضيف أو تحذف ردوداً وأوامر مخصصة لأي مجموعة دون الحاجة للدخول إليها.\\n\\n"
+            "اختر العملية ثم أرسل البيانات في رسالة واحدة مفصولة بعلامة |.")
+
+
+def owner_replies_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ إضافة رد", callback_data="owner:input:add_reply"), InlineKeyboardButton("➖ حذف رد", callback_data="owner:input:del_reply")],
+        [InlineKeyboardButton("➕ إضافة أمر", callback_data="owner:input:add_command"), InlineKeyboardButton("➖ حذف أمر", callback_data="owner:input:del_command")],
+        [InlineKeyboardButton("🏠 لوحة المالك", callback_data="owner:home")],
+    ])
+
+
+async def owner_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    message = update.effective_message
+    if not user or user.id != OWNER_ID or not message or message.chat.type != ChatType.PRIVATE:
+        return
+    mode = context.user_data.get("owner_input")
+    if not mode:
+        return
+    raw = message.text.strip()
+    context.user_data.pop("owner_input", None)
+    if normalize(raw) in ("الغاء", "إلغاء", "cancel"):
+        await message.reply_text("تم إلغاء العملية.", reply_markup=owner_replies_markup())
+        return
+    parts = [part.strip() for part in raw.split("|", 2)]
+    try:
+        if mode == "add_reply" and len(parts) == 3:
+            chat_id, keyword, response = int(parts[0]), parts[1], parts[2]
+            db.add_reply(chat_id, keyword, response)
+            await message.reply_text("✅ تمت إضافة الرد المخصص وحفظه للمجموعة.", reply_markup=owner_replies_markup())
+        elif mode == "del_reply" and len(parts) >= 2:
+            chat_id, keyword = int(parts[0]), parts[1]
+            db.delete_reply(chat_id, keyword)
+            await message.reply_text("✅ تم حذف الرد المخصص إن كان موجوداً.", reply_markup=owner_replies_markup())
+        elif mode == "add_command" and len(parts) == 3:
+            chat_id, command, response = int(parts[0]), parts[1].lstrip("/"), parts[2]
+            db.add_command(chat_id, command, response)
+            await message.reply_text("✅ تمت إضافة الأمر المخصص وحفظه للمجموعة.", reply_markup=owner_replies_markup())
+        elif mode == "del_command" and len(parts) >= 2:
+            chat_id, command = int(parts[0]), parts[1].lstrip("/")
+            db.delete_command(chat_id, command)
+            await message.reply_text("✅ تم حذف الأمر المخصص إن كان موجوداً.", reply_markup=owner_replies_markup())
+        else:
+            await message.reply_text("الصيغة غير صحيحة. أرسل إلغاء ثم أعد المحاولة من اللوحة.", reply_markup=owner_replies_markup())
+    except (ValueError, TypeError):
+        await message.reply_text("المعرف يجب أن يكون رقماً صحيحاً. أرسل إلغاء ثم أعد المحاولة.", reply_markup=owner_replies_markup())
 
 
 async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2646,6 +2755,41 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif data.startswith("owner:"):
         if user_id != OWNER_ID:
             return
+        if data == "owner:groups":
+            await query.edit_message_text(owner_groups_text(), reply_markup=owner_groups_markup())
+            return
+        if data == "owner:replies":
+            await query.edit_message_text(owner_replies_text(), reply_markup=owner_replies_markup())
+            return
+        if data.startswith("owner:input:"):
+            mode = data.split(":", 2)[2]
+            if mode not in {"add_reply", "del_reply", "add_command", "del_command"}:
+                return
+            context.user_data["owner_input"] = mode
+            examples = {"add_reply": "chat_id | الكلمة | نص الرد", "del_reply": "chat_id | الكلمة", "add_command": "chat_id | اسم_الأمر | نص الرد", "del_command": "chat_id | اسم_الأمر"}
+            await query.edit_message_text(f"✍️ إدخال لوحة المالك\\n━━━━━━━━━━━━━━━━━━\\nأرسل البيانات بهذا الشكل:\\n{examples[mode]}\\n\\nأرسل إلغاء للعودة دون حفظ.")
+            return
+        if data.startswith("owner:group:"):
+            chat_id = int(data.split(":", 2)[2])
+            await query.edit_message_text(owner_group_text(chat_id), reply_markup=owner_group_markup(chat_id))
+            return
+        if data.startswith("owner:gfeature:"):
+            parts = data.split(":", 3)
+            if len(parts) != 4 or parts[3] not in FEATURES or parts[3] == "all":
+                return
+            chat_id, key = int(parts[2]), parts[3]
+            current = db.all_features(chat_id).get(key, True)
+            db.set_feature(chat_id, key, not current)
+            await query.edit_message_text(owner_group_text(chat_id), reply_markup=owner_group_markup(chat_id))
+            return
+        if data.startswith("owner:gplan:"):
+            parts = data.split(":", 3)
+            if len(parts) != 4 or parts[3] not in {"vip", "free"}:
+                return
+            chat_id, plan = int(parts[2]), parts[3]
+            db.set_plan(chat_id, plan, None, OWNER_ID)
+            await query.edit_message_text(owner_group_text(chat_id), reply_markup=owner_group_markup(chat_id))
+            return
         section = data.split(":", 1)[1]
         if section == "home":
             await query.edit_message_text(owner_dashboard_text(), reply_markup=owner_menu_markup())
@@ -2766,6 +2910,7 @@ def add_handlers(app: Application) -> None:
     app.add_handler(CommandHandler(["broadcast"], broadcast_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_handler), group=0)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, owner_input_handler), group=1)
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, moderation_handler), group=1)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, natural_language_handler), group=2)
 
