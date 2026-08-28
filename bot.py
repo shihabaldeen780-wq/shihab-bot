@@ -683,7 +683,7 @@ async def bot_is_admin(update: Update) -> bool:
     if not chat or chat.type == ChatType.PRIVATE:
         return False
     try:
-        member = await chat.get_member((await update.get_bot()).id)
+        member = await chat.get_member(update.get_bot().id)
         return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
     except TelegramError:
         return False
