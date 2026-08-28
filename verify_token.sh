@@ -1,17 +1,7 @@
-#!/usr/bin/env bash
-set -euo pipefail
-cd "$(dirname "$0")"
-set -a
-source .env
-set +a
-response="$(curl -fsS "https://api.telegram.org/bot${BOT_TOKEN}/getMe")"
-case "$response" in
-  *'"ok":true'*)
-    echo "TOKEN_OK"
-    echo "$response" | sed -E 's/.*"username":"([^"]+)".*/BOT_USERNAME=@\1/'
-    ;;
-  *)
-    echo "TOKEN_INVALID_OR_UNAVAILABLE"
-    exit 1
-    ;;
-esac
+#!/bin/bash
+# التحقق من توكن Gh_317_bot
+if [ -z "$BOT_TOKEN" ]; then
+  echo "BOT_TOKEN غير موجود! ضعه في Environment Variables"
+  exit 1
+fi
+curl -s "https://api.telegram.org/bot$BOT_TOKEN/getMe" | grep -q '"ok":true' && echo "Token صحيح - @Gh_317_bot جاهز" || echo "Token خطأ"

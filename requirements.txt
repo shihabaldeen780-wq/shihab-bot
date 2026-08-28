@@ -1,6 +1,1 @@
-python-telegram-bot>=21.10,<23
-python-dotenv>=1.0.1,<2
-fastapi>=0.115,<1
-uvicorn[standard]>=0.34,<1
-# Optional: enables YouTube search/download commands.
-yt-dlp>=2025.1.15
+python-telegram-bot==20.8
