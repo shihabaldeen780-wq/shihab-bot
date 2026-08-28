@@ -277,6 +277,15 @@ class Database:
                     earned_at TEXT NOT NULL,
                     PRIMARY KEY (chat_id, user_id, achievement)
                 );
+                CREATE TABLE IF NOT EXISTS marriages (
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    partner_id INTEGER NOT NULL,
+                    dowry INTEGER NOT NULL DEFAULT 0,
+                    married_at TEXT NOT NULL,
+                    PRIMARY KEY (chat_id, user_id),
+                    UNIQUE (chat_id, partner_id)
+                );
                 CREATE TABLE IF NOT EXISTS event_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     chat_id INTEGER,
@@ -625,6 +634,33 @@ class Database:
             cur = conn.execute("INSERT OR IGNORE INTO game_achievements(chat_id,user_id,achievement,earned_at) VALUES(?,?,?,?)", (chat_id, user_id, achievement, utc_now()))
             return cur.rowcount > 0
 
+    def marriage_for_user(self, chat_id: int, user_id: int) -> sqlite3.Row | None:
+        with self.connect() as conn:
+            return conn.execute("SELECT * FROM marriages WHERE chat_id=? AND user_id=?", (chat_id, user_id)).fetchone()
+
+    def create_marriage(self, chat_id: int, user_id: int, partner_id: int, dowry: int) -> bool:
+        if user_id == partner_id or dowry < 0:
+            return False
+        with self.connect() as conn:
+            if conn.execute("SELECT 1 FROM marriages WHERE chat_id=? AND user_id IN (?,?)", (chat_id, user_id, partner_id)).fetchone():
+                return False
+            conn.execute("INSERT INTO marriages(chat_id,user_id,partner_id,dowry,married_at) VALUES(?,?,?,?,?)", (chat_id, user_id, partner_id, dowry, utc_now()))
+            conn.execute("INSERT INTO marriages(chat_id,user_id,partner_id,dowry,married_at) VALUES(?,?,?,?,?)", (chat_id, partner_id, user_id, dowry, utc_now()))
+            return True
+
+    def divorce(self, chat_id: int, user_id: int) -> tuple[int, int] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT partner_id,dowry FROM marriages WHERE chat_id=? AND user_id=?", (chat_id, user_id)).fetchone()
+            if not row:
+                return None
+            partner_id, dowry = int(row["partner_id"]), int(row["dowry"])
+            conn.execute("DELETE FROM marriages WHERE chat_id=? AND user_id IN (?,?)", (chat_id, user_id, partner_id))
+            return partner_id, dowry
+
+    def marriages(self, chat_id: int, limit: int = 20) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute("SELECT m.user_id,m.partner_id,m.dowry,m.married_at,u.first_name AS user_name,p.first_name AS partner_name FROM marriages m LEFT JOIN users u ON u.user_id=m.user_id LEFT JOIN users p ON p.user_id=m.partner_id WHERE m.chat_id=? AND m.user_id<m.partner_id ORDER BY m.dowry DESC,m.married_at ASC LIMIT ?", (chat_id, limit)).fetchall()
+
     def achievements(self, chat_id: int, user_id: int) -> list[str]:
         with self.connect() as conn:
             return [str(row["achievement"]) for row in conn.execute("SELECT achievement FROM game_achievements WHERE chat_id=? AND user_id=? ORDER BY earned_at", (chat_id, user_id))]
@@ -794,6 +830,7 @@ def commands_text() -> str:
         "بدون شرطة مائلة أيضاً: قفل الروابط، فتح الصور، تفعيل الترحيب، تعطيل التكرار.\n\n"
         "الاقتصاد: ملفي، بنك إيداع 100، بنك سحب 100، متجر، شراء درع، حقيبتي، تحويل 50، أغنى، سمعتي.\n"
         "المميزات الجديدة: كنز، معركة، كلمات، كلمة جوابك، وخبرة ترفع الرتبة تلقائياً.\n"
+        "النظام الاجتماعي: زواج بالرد، زواجي، طلاق، وزواجات. المهر رمزي ومسجل داخل المجموعة فقط.\n"
         "رتب متقدمة: الملك المطلق، مالك أساسي، مالك، مشرف عام، نائب، مشرف صامت، مدير، ادمن، مميز.\n"
     )
 
@@ -802,7 +839,7 @@ def services_text() -> str:
     return (
         "خدمات شهاب\n\n"
         "حماية الروابط والسبام، منع أنواع الوسائط، نظام التحذيرات، الكتم المؤقت، السجن، الترحيب، القوانين، الردود المخصصة، الأوامر المخصصة، معلومات الأعضاء، مركز ألعاب، نقاط، يومية، متصدرين، إنجازات، لوحة المالك، وبحث يوتيوب اختياري.\n\n"
-        "كل إعداد مستقل لكل مجموعة، وصلاحيات الإدارة تُفحص من تيليجرام قبل أي إجراء. أضيفت الآن محفظة وبنك ومتجر وتحويلات، سمعة وخبرة، حماية ذكية من السبام، كنز، معركة، كلمة يومية، استطلاعات، تثبيت، بلاغات، جدولة، إحصائيات نشاط، ونسخ احتياطي للمالك."
+        "كل إعداد مستقل لكل مجموعة، وصلاحيات الإدارة تُفحص من تيليجرام قبل أي إجراء. أضيفت الآن محفظة وبنك ومتجر وتحويلات، سمعة وخبرة، حماية ذكية من السبام، كنز، معركة، كلمة يومية، نظام اجتماعي للزواج والطلاق، استطلاعات، تثبيت، بلاغات، جدولة، إحصائيات نشاط، ونسخ احتياطي للمالك."
     )
 
 
@@ -1737,6 +1774,75 @@ async def whisper_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.effective_message.reply_text(f"همسة إلى {target.first_name}: أهلاً بك في المجموعة.")
 
 
+@group_only
+async def marriage_command(update: Update, context: ContextTypes.DEFAULT_TYPE, raw_dowry: str | None = None) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    target = await target_from_reply(update)
+    if not target:
+        await update.effective_message.reply_text("استخدم زواج بالرد على رسالة الشخص الذي تريد الزواج منه.")
+        return
+    if target.id == user.id or target.is_bot:
+        await update.effective_message.reply_text("لا يمكن الزواج من نفسك أو من حساب آلي.")
+        return
+    if db.marriage_for_user(chat.id, user.id) or db.marriage_for_user(chat.id, target.id):
+        await update.effective_message.reply_text("أحد الطرفين مرتبط مسبقاً. استخدم زواجي أو طلاق لمعرفة الحالة.")
+        return
+    value = raw_dowry if raw_dowry is not None else (" ".join(context.args) if context.args else "0")
+    try:
+        dowry = max(0, min(int(value.strip() or 0), 1_000_000))
+    except ValueError:
+        dowry = 0
+    if not db.create_marriage(chat.id, user.id, target.id, dowry):
+        await update.effective_message.reply_text("تعذر تسجيل الزواج؛ ربما سبق أحد الطرفين الآخر في نفس اللحظة.")
+        return
+    db.log(chat.id, user.id, f"marriage:{user.id}:{target.id}:{dowry}")
+    await update.effective_message.reply_text(f"💍 مبروك! تم تسجيل زواج {user.first_name} و{target.first_name}.\nالمهر الرمزي: {dowry} شهاب\nاستخدم زواجي لعرض الوثيقة أو طلاق للانفصال.")
+
+
+@group_only
+async def my_marriage_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    row = db.marriage_for_user(chat.id, user.id)
+    if not row:
+        await update.effective_message.reply_text("لا توجد وثيقة زواج لك في هذه المجموعة.")
+        return
+    await update.effective_message.reply_text(f"💍 وثيقة زواج {user.first_name}\nالشريك: {row['partner_id']}\nالمهر الرمزي: {row['dowry']} شهاب\nتاريخ التسجيل: {row['married_at'][:10]}")
+
+
+@group_only
+async def divorce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    result = db.divorce(chat.id, user.id)
+    if not result:
+        await update.effective_message.reply_text("لا توجد وثيقة زواج لإنهائها.")
+        return
+    partner_id, dowry = result
+    db.log(chat.id, user.id, f"divorce:{user.id}:{partner_id}")
+    await update.effective_message.reply_text(f"تم إنهاء وثيقة الزواج بنجاح. المهر المسجل كان {dowry} شهاب.")
+
+
+@group_only
+async def marriages_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    rows = db.marriages(chat.id)
+    if not rows:
+        await update.effective_message.reply_text("لا توجد زيجات مسجلة في هذه المجموعة بعد.")
+        return
+    lines = [f"{i}. {row['user_name'] or row['user_id']} ❤️ {row['partner_name'] or row['partner_id']} — مهر {row['dowry']}" for i, row in enumerate(rows, 1)]
+    await update.effective_message.reply_text("💍 زيجات المجموعة\n\n" + "\n".join(lines))
+
+
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE, arabic_query: str | None = None) -> None:
     if yt_dlp is None:
         await update.effective_message.reply_text("ميزة يوتيوب غير مثبتة. ثبّت المتطلبات ثم أعد التشغيل.")
@@ -2089,6 +2195,18 @@ async def natural_language_handler(update: Update, context: ContextTypes.DEFAULT
         return
     if raw in ("معركة", "معركة البوتات", "قتال"):
         await battle_command(update, context)
+        return
+    if verb in ("زواج", "تزوج", "تزوجني"):
+        await marriage_command(update, context, rest or None)
+        return
+    if raw in ("زواجي", "وثيقة زواجي", "زواجي؟"):
+        await my_marriage_command(update, context)
+        return
+    if raw in ("طلاق", "اطلاق", "إطلاق"):
+        await divorce_command(update, context)
+        return
+    if raw in ("زواجات", "الزواجات", "المتزوجين"):
+        await marriages_command(update, context)
         return
     if raw in ("كلمات", "الكلمات المتقاطعة", "كلمة اليوم"):
         await word_command(update, context)
@@ -2510,6 +2628,10 @@ def add_handlers(app: Application) -> None:
     app.add_handler(CommandHandler(["age"], age_command))
     app.add_handler(CommandHandler(["bio"], bio_command))
     app.add_handler(CommandHandler(["whisper"], whisper_command))
+    app.add_handler(CommandHandler(["marry", "marriage"], marriage_command))
+    app.add_handler(CommandHandler(["my_marriage"], my_marriage_command))
+    app.add_handler(CommandHandler(["divorce"], divorce_command))
+    app.add_handler(CommandHandler(["marriages"], marriages_command))
     app.add_handler(CommandHandler(["search"], search_command))
     app.add_handler(CommandHandler(["yt"], youtube_command))
     app.add_handler(CommandHandler(["games"], games_command))
