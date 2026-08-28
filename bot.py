@@ -692,6 +692,29 @@ class Database:
             events = conn.execute("SELECT COUNT(*) AS n FROM event_log").fetchone()["n"]
         return {"users": users, "groups": groups, "events": events}
 
+    def event_log(self, limit: int = 30, chat_id: int | None = None) -> list[sqlite3.Row]:
+        query = ("SELECT e.id,e.chat_id,e.actor_id,e.event,e.created_at,"
+                 "COALESCE(g.title, 'خاص/عام') AS chat_title,"
+                 "COALESCE(u.first_name, CAST(e.actor_id AS TEXT), 'النظام') AS actor_name "
+                 "FROM event_log e LEFT JOIN groups_info g ON g.chat_id=e.chat_id "
+                 "LEFT JOIN users u ON u.user_id=e.actor_id")
+        params: list[Any] = []
+        if chat_id is not None:
+            query += " WHERE e.chat_id=?"
+            params.append(chat_id)
+        query += " ORDER BY e.id DESC LIMIT ?"
+        params.append(max(1, min(limit, 100)))
+        with self.connect() as conn:
+            return conn.execute(query, tuple(params)).fetchall()
+
+    def activity_groups(self, limit: int = 20) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute("SELECT g.chat_id,g.title,COALESCE(p.plan,'free') AS plan,COUNT(a.user_id) AS active_members,COALESCE(SUM(a.message_count),0) AS messages FROM groups_info g LEFT JOIN message_activity a ON a.chat_id=g.chat_id LEFT JOIN group_plans p ON p.chat_id=g.chat_id GROUP BY g.chat_id,g.title,p.plan ORDER BY messages DESC LIMIT ?", (max(1, min(limit, 50)),)).fetchall()
+
+    def activity_members_global(self, limit: int = 20) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute("SELECT a.user_id,COALESCE(u.first_name,CAST(a.user_id AS TEXT)) AS first_name,COALESCE(u.username,'') AS username,SUM(a.message_count) AS messages,COUNT(DISTINCT a.chat_id) AS groups FROM message_activity a LEFT JOIN users u ON u.user_id=a.user_id GROUP BY a.user_id,u.first_name,u.username ORDER BY messages DESC LIMIT ?", (max(1, min(limit, 50)),)).fetchall()
+
     def find_user(self, identifier: str) -> sqlite3.Row | None:
         identifier = identifier.strip().lstrip("@")
         with self.connect() as conn:
@@ -1012,6 +1035,7 @@ async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.effective_message.reply_text("لا أضع تحذيرات على المشرفين.")
         return
     count = db.add_warning(update.effective_chat.id, target.id)
+    db.log(update.effective_chat.id, update.effective_user.id, f"warn:{target.id}:{count}")
     await update.effective_message.reply_text(f"تحذير {target.first_name}: {count}/3")
     if count >= 3:
         try:
@@ -1037,6 +1061,7 @@ async def reset_warns_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     target = await target_from_reply(update, require_reply=True)
     if target:
         db.reset_warnings(update.effective_chat.id, target.id)
+        db.log(update.effective_chat.id, update.effective_user.id, f"reset_warns:{target.id}")
         await update.effective_message.reply_text(f"تم تصفير تحذيرات {target.first_name}.")
 
 
@@ -1050,6 +1075,7 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     try:
         await update.effective_chat.unban_member(target.id)
+        db.log(update.effective_chat.id, update.effective_user.id, f"unban:{target.id}")
         await update.effective_message.reply_text("✅ تم إلغاء الحظر عن العضو الذي رددت على رسالته.")
     except TelegramError as exc:
         await update.effective_message.reply_text(f"تعذر إلغاء الحظر: {exc}")
@@ -1073,6 +1099,7 @@ async def set_text_command(update: Update, context: ContextTypes.DEFAULT_TYPE, n
         await update.effective_message.reply_text(f"استخدم الأمر مع نص، مثال: /{name} أهلاً {{name}}")
         return
     db.set_text(update.effective_chat.id, name, value)
+    db.log(update.effective_chat.id, update.effective_user.id, f"set_text:{name}")
     await update.effective_message.reply_text(f"تم حفظ {name}.")
 
 
@@ -1081,6 +1108,7 @@ async def delete_text_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not await admin_required(update):
         return
     db.set_text(update.effective_chat.id, name, None)
+    db.log(update.effective_chat.id, update.effective_user.id, f"delete_text:{name}")
     await update.effective_message.reply_text("تم الحذف.")
 
 
@@ -1103,6 +1131,7 @@ async def toggle_command(update: Update, context: ContextTypes.DEFAULT_TYPE, ena
         await update.effective_message.reply_text("الميزة غير معروفة. استخدم /settings لرؤية الأسماء.")
         return
     db.set_feature(update.effective_chat.id, key, enabled)
+    db.log(update.effective_chat.id, update.effective_user.id, f"feature:{key}:{enabled}")
     await update.effective_message.reply_text(f"تم {'تفعيل' if enabled else 'تعطيل'} {FEATURES[key]}.")
 
 
@@ -1123,6 +1152,7 @@ async def lock_command(update: Update, context: ContextTypes.DEFAULT_TYPE, enabl
             db.set_feature(update.effective_chat.id, feature_name, enabled)
     else:
         db.set_feature(update.effective_chat.id, key, not enabled)
+    db.log(update.effective_chat.id, update.effective_user.id, f"lock:{key}:{enabled}")
     await update.effective_message.reply_text(f"تم {'فتح' if enabled else 'قفل'} {FEATURES[key]}.")
 
 
@@ -1139,6 +1169,7 @@ async def add_reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await update.effective_message.reply_text("يجب كتابة الكلمة والرد.")
         return
     db.add_reply(update.effective_chat.id, keyword, reply)
+    db.log(update.effective_chat.id, update.effective_user.id, f"add_reply:{normalize(keyword)}")
     await update.effective_message.reply_text(f"تم حفظ رد كلمة: {keyword.strip()}")
 
 
@@ -1160,6 +1191,7 @@ async def del_reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await update.effective_message.reply_text("استخدم /delreply كلمة")
         return
     db.delete_reply(update.effective_chat.id, keyword)
+    db.log(update.effective_chat.id, update.effective_user.id, f"delete_reply:{normalize(keyword)}")
     await update.effective_message.reply_text("تم حذف الرد إن كان موجوداً.")
 
 
@@ -1168,6 +1200,7 @@ async def del_all_replies_command(update: Update, context: ContextTypes.DEFAULT_
     if not await admin_required(update):
         return
     db.delete_all_replies(update.effective_chat.id)
+    db.log(update.effective_chat.id, update.effective_user.id, "delete_all_replies")
     await update.effective_message.reply_text("تم حذف جميع الردود.")
 
 
@@ -1185,6 +1218,7 @@ async def add_command_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.effective_message.reply_text("يجب كتابة اسم الأمر والرد.")
         return
     db.add_command(update.effective_chat.id, command, response)
+    db.log(update.effective_chat.id, update.effective_user.id, f"add_command:{command}")
     await update.effective_message.reply_text(f"تم حفظ الأمر المخصص: {command}")
 
 
@@ -1195,8 +1229,10 @@ async def del_command_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not context.args:
         await update.effective_message.reply_text("استخدم /delcmd اسم_الأمر")
         return
+    command = normalize(context.args[0]).lstrip("/")
     with db.connect() as conn:
-        conn.execute("DELETE FROM custom_commands WHERE chat_id=? AND command=?", (update.effective_chat.id, normalize(context.args[0]).lstrip("/")))
+        conn.execute("DELETE FROM custom_commands WHERE chat_id=? AND command=?", (update.effective_chat.id, command))
+    db.log(update.effective_chat.id, update.effective_user.id, f"delete_command:{command}")
     await update.effective_message.reply_text("تم حذف الأمر إن كان موجوداً.")
 
 
@@ -2131,6 +2167,7 @@ async def arabic_unban(update: Update, context: ContextTypes.DEFAULT_TYPE, rest:
         return
     try:
         await update.effective_chat.unban_member(target.id)
+        db.log(update.effective_chat.id, update.effective_user.id, f"unban:{target.id}")
         await update.effective_message.reply_text("✅ تم رفع الحظر عن العضو الذي رددت على رسالته.")
     except TelegramError as exc:
         await update.effective_message.reply_text(f"تعذر رفع الحظر: {exc}")
@@ -2456,7 +2493,8 @@ async def owner_only(update: Update, notify: bool = True) -> bool:
 
 def owner_menu_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 الإحصائيات", callback_data="owner:stats"), InlineKeyboardButton("👥 إدارة المجموعات", callback_data="owner:groups")],
+        [InlineKeyboardButton("📊 الإحصائيات", callback_data="owner:stats"), InlineKeyboardButton("📈 النشاط", callback_data="owner:activity")],
+        [InlineKeyboardButton("👥 إدارة المجموعات", callback_data="owner:groups"), InlineKeyboardButton("📒 سجل الأوامر", callback_data="owner:events")],
         [InlineKeyboardButton("⚙️ إعدادات مجموعة", callback_data="owner:groups"), InlineKeyboardButton("🧩 الردود والمحتوى", callback_data="owner:replies")],
         [InlineKeyboardButton("🛡️ المساعدون", callback_data="owner:assistants"), InlineKeyboardButton("🚫 الحظر العام", callback_data="owner:bans")],
         [InlineKeyboardButton("💾 نسخة احتياطية", callback_data="owner:backup"), InlineKeyboardButton("📖 دليل المالك", callback_data="owner:help")],
@@ -2475,6 +2513,27 @@ def owner_dashboard_text() -> str:
             "من هنا تتحكم بالمجموعات والمحتوى والنسخ الاحتياطية. كل إجراء محمي بحساب المالك فقط.")
 
 
+def owner_activity_text() -> str:
+    groups = db.activity_groups()
+    members = db.activity_members_global()
+    group_lines = [f"{index}. {row['title'] or row['chat_id']} — {row['messages']} رسالة / {row['active_members']} نشط" for index, row in enumerate(groups[:10], 1)]
+    member_lines = [f"{index}. {row['first_name']} — {row['messages']} رسالة في {row['groups']} مجموعة" for index, row in enumerate(members[:10], 1)]
+    return ("📈 نشاط شهاب\n━━━━━━━━━━━━━━━━━━\n"
+            "أكثر المجموعات نشاطاً:\n" + ("\n".join(group_lines) if group_lines else "لا توجد بيانات نشاط بعد.") +
+            "\n\nأكثر الأعضاء نشاطاً:\n" + ("\n".join(member_lines) if member_lines else "لا توجد بيانات أعضاء بعد."))
+
+
+def owner_events_text() -> str:
+    rows = db.event_log(limit=30)
+    if not rows:
+        return "📒 سجل الأوامر الإدارية\n━━━━━━━━━━━━━━━━━━\nلا توجد عمليات مسجلة بعد."
+    lines = []
+    for row in rows:
+        stamp = str(row["created_at"]).replace("T", " ")[:16]
+        lines.append(f"• {stamp} | {row['chat_title']} | {row['actor_name']} | {row['event']}")
+    return "📒 سجل الأوامر الإدارية\n━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines)
+
+
 def owner_groups_markup() -> InlineKeyboardMarkup:
     rows = []
     groups = db.groups_info()
@@ -2491,8 +2550,8 @@ def owner_groups_markup() -> InlineKeyboardMarkup:
 def owner_groups_text() -> str:
     groups = db.groups_info()
     if not groups:
-        return "👥 إدارة المجموعات\\n━━━━━━━━━━━━━━━━━━\\nلا توجد مجموعات مسجلة بعد. أضف البوت إلى مجموعة وابدأ استخدامه، ثم ستظهر هنا."
-    return "👥 إدارة المجموعات\\n━━━━━━━━━━━━━━━━━━\\nاختر مجموعة لعرض خطتها وتبديل ميزاتها من داخل لوحة المالك."
+        return "👥 إدارة المجموعات\n━━━━━━━━━━━━━━━━━━\nلا توجد مجموعات مسجلة بعد. أضف البوت إلى مجموعة وابدأ استخدامه، ثم ستظهر هنا."
+    return "👥 إدارة المجموعات\n━━━━━━━━━━━━━━━━━━\nاختر مجموعة لعرض خطتها وتبديل ميزاتها من داخل لوحة المالك."
 
 
 def owner_group_text(chat_id: int) -> str:
@@ -2502,8 +2561,8 @@ def owner_group_text(chat_id: int) -> str:
     group = next((row for row in db.groups_info() if int(row["chat_id"]) == chat_id), None)
     title = str(group["title"] if group else chat_id)
     expiry = datetime.fromtimestamp(expires).strftime("%Y-%m-%d") if expires else "غير محدد"
-    return (f"⚙️ إعدادات المجموعة\\n━━━━━━━━━━━━━━━━━━\\nالمجموعة: {title}\\nالمعرف: {chat_id}\\n"
-            f"الخطة: {plan}\\nالانتهاء: {expiry}\\nالمفاتيح المفتوحة: {enabled}/{len(FEATURES) - 1}\\n\\n"
+    return (f"⚙️ إعدادات المجموعة\n━━━━━━━━━━━━━━━━━━\nالمجموعة: {title}\nالمعرف: {chat_id}\n"
+            f"الخطة: {plan}\nالانتهاء: {expiry}\nالمفاتيح المفتوحة: {enabled}/{len(FEATURES) - 1}\n\n"
             "اضغط على أي ميزة لتبديلها. لا تتغير صلاحيات تيليجرام من هنا؛ هذه إعدادات شهاب فقط.")
 
 
@@ -2523,8 +2582,8 @@ def owner_group_markup(chat_id: int) -> InlineKeyboardMarkup:
 
 
 def owner_replies_text() -> str:
-    return ("🧩 إدارة الردود والمحتوى\\n━━━━━━━━━━━━━━━━━━\\n"
-            "من هنا تضيف أو تحذف ردوداً وأوامر مخصصة لأي مجموعة دون الحاجة للدخول إليها.\\n\\n"
+    return ("🧩 إدارة الردود والمحتوى\n━━━━━━━━━━━━━━━━━━\n"
+            "من هنا تضيف أو تحذف ردوداً وأوامر مخصصة لأي مجموعة دون الحاجة للدخول إليها.\n\n"
             "اختر العملية ثم أرسل البيانات في رسالة واحدة مفصولة بعلامة |.")
 
 
@@ -2721,7 +2780,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif data == "home:about":
         await query.edit_message_text("🛡️ عن شهاب\n━━━━━━━━━━━━━━━━━━\nشهاب مساعد عربي صُمم ليجمع بين الإدارة المنضبطة، الحماية الذكية، الترفيه، والاقتصاد داخل تجربة واحدة واضحة.\n\nيعمل كل إعداد داخل مجموعته بشكل مستقل، ويتحقق من الصلاحيات قبل الإجراءات الإدارية. كما يدعم الأوامر العربية المباشرة والقوائم التفاعلية لتقليل الكتابة والارتباك.\n\nشعار شهاب: تنظيم أقوى، تفاعل أذكى، وإدارة أوضح.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📚 الأوامر", callback_data="home:commands:0"), InlineKeyboardButton("🧭 الخدمات", callback_data="home:services:0")], [InlineKeyboardButton("رجوع", callback_data="home:main")]]))
     elif data == "home:main":
-        await query.edit_message_text("🏠 القائمة الرئيسية\\n\\nاختر قسماً واحداً للبدء:", reply_markup=main_keyboard(user_id == OWNER_ID))
+        await query.edit_message_text("🏠 القائمة الرئيسية\n\nاختر قسماً واحداً للبدء:", reply_markup=main_keyboard(user_id == OWNER_ID))
     elif data == "home:settings":
         chat = update.effective_chat
         if not chat or chat.type == ChatType.PRIVATE:
@@ -2760,13 +2819,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if data == "owner:replies":
             await query.edit_message_text(owner_replies_text(), reply_markup=owner_replies_markup())
             return
+        if data == "owner:activity":
+            await query.edit_message_text(owner_activity_text(), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 تحديث", callback_data="owner:activity"), InlineKeyboardButton("لوحة المالك", callback_data="owner:home")]]))
+            return
+        if data == "owner:events":
+            await query.edit_message_text(owner_events_text(), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 تحديث", callback_data="owner:events"), InlineKeyboardButton("لوحة المالك", callback_data="owner:home")]]))
+            return
         if data.startswith("owner:input:"):
             mode = data.split(":", 2)[2]
             if mode not in {"add_reply", "del_reply", "add_command", "del_command"}:
                 return
             context.user_data["owner_input"] = mode
             examples = {"add_reply": "chat_id | الكلمة | نص الرد", "del_reply": "chat_id | الكلمة", "add_command": "chat_id | اسم_الأمر | نص الرد", "del_command": "chat_id | اسم_الأمر"}
-            await query.edit_message_text(f"✍️ إدخال لوحة المالك\\n━━━━━━━━━━━━━━━━━━\\nأرسل البيانات بهذا الشكل:\\n{examples[mode]}\\n\\nأرسل إلغاء للعودة دون حفظ.")
+            await query.edit_message_text(f"✍️ إدخال لوحة المالك\n━━━━━━━━━━━━━━━━━━\nأرسل البيانات بهذا الشكل:\n{examples[mode]}\n\nأرسل إلغاء للعودة دون حفظ.")
             return
         if data.startswith("owner:group:"):
             chat_id = int(data.split(":", 2)[2])
