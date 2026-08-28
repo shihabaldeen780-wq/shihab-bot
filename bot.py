@@ -2258,15 +2258,28 @@ async def owner_only(update: Update) -> bool:
     return True
 
 
+def owner_menu_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 الإحصائيات", callback_data="owner:stats"), InlineKeyboardButton("👥 المجموعات", callback_data="owner:groups")],
+        [InlineKeyboardButton("🛡️ المساعدون", callback_data="owner:assistants"), InlineKeyboardButton("🚫 الحظر العام", callback_data="owner:bans")],
+        [InlineKeyboardButton("💾 نسخة احتياطية", callback_data="owner:backup"), InlineKeyboardButton("📖 طريقة الإدارة", callback_data="owner:help")],
+        [InlineKeyboardButton("🔄 تحديث", callback_data="owner:home"), InlineKeyboardButton("إغلاق", callback_data="owner:close")],
+    ])
+
+
+def owner_dashboard_text() -> str:
+    stats = db.stats()
+    plans = db.plan_counts()
+    return (f"لوحة مالك شهاب\n\nالمستخدمون: {stats['users']}\nالمجموعات: {stats['groups']}\n"
+            f"VIP: {plans.get('vip', 0)}\nعادية: {plans.get('free', 0)}\n"
+            f"المساعدون: {len(db.assistants())}\nالحظر العام: {len(db.global_bans())}\n"
+            f"الأحداث المسجلة: {stats['events']}\n\nاختر قسماً من الأزرار أو استخدم الأوامر العربية.")
+
+
 async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await owner_only(update):
         return
-    stats = db.stats()
-    plans = db.plan_counts()
-    await update.effective_message.reply_text(
-        f"لوحة مالك شهاب\\n\\nالمستخدمون: {stats['users']}\\nالمجموعات: {stats['groups']}\\nVIP: {plans.get('vip', 0)}\\nعادية: {plans.get('free', 0)}\\nالمساعدون: {len(db.assistants())}\\nالحظر العام: {len(db.global_bans())}\\nالأحداث المسجلة: {stats['events']}\\n\\nالأوامر العربية: مساعد المطور، حظر عام، ترقية المجموعة، شحن 30، فحص الاشتراك، بث نص.\\nلا أضع إعادة تشغيل خطرة داخل الدردشة؛ أعد تشغيل الخدمة من مدير التشغيل.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("تحديث", callback_data="owner:home")]]),
-    )
+    await update.effective_message.reply_text(owner_dashboard_text(), reply_markup=owner_menu_markup())
 
 
 async def owner_target_id(update: Update, identifier: str | None = None) -> int | None:
@@ -2413,12 +2426,45 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         features = db.all_features(chat.id)
         lines = ["إعدادات المجموعة الحالية:"] + [f"{'مفتوح' if features.get(k, True) else 'مغلق'} — {v}" for k, v in FEATURES.items()]
         await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data="home:main")]]))
-    elif data == "owner:home":
+    elif data.startswith("owner:"):
         if user_id != OWNER_ID:
             await query.edit_message_text("غير مصرح.")
             return
-        stats = db.stats()
-        await query.edit_message_text(f"لوحة المالك\n\nالمستخدمون: {stats['users']}\nالمجموعات: {stats['groups']}\nالأحداث: {stats['events']}\n\nاستخدم /broadcast نص للبث.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data="home:main")]]))
+        section = data.split(":", 1)[1]
+        if section == "home":
+            await query.edit_message_text(owner_dashboard_text(), reply_markup=owner_menu_markup())
+        elif section == "stats":
+            stats = db.stats()
+            plans = db.plan_counts()
+            await query.edit_message_text(f"📊 إحصائيات شهاب\n\nالمستخدمون: {stats['users']}\nالمجموعات: {stats['groups']}\nVIP: {plans.get('vip', 0)}\nعادية: {plans.get('free', 0)}\nالأحداث: {stats['events']}\nالمساعدون: {len(db.assistants())}\nالحظر العام: {len(db.global_bans())}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع للوحة المالك", callback_data="owner:home")]]))
+        elif section == "groups":
+            group_ids = db.group_ids()
+            vip_ids = set(db.group_ids("vip"))
+            lines = [f"• {chat_id} — {'VIP' if chat_id in vip_ids else 'عادية'}" for chat_id in group_ids[:30]]
+            text = "👥 مجموعات شهاب\n\n" + ("\n".join(lines) if lines else "لا توجد مجموعات مسجلة.")
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع للوحة المالك", callback_data="owner:home")]]))
+        elif section == "assistants":
+            assistants = db.assistants()
+            text = "🛡️ مساعدو المالك\n\n" + ("\n".join(f"• {item}" for item in assistants) if assistants else "لا يوجد مساعدين.")
+            await query.edit_message_text(text + "\n\nإضافة: إضافة مساعد 123456\nإزالة: إزالة مساعد 123456", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع للوحة المالك", callback_data="owner:home")]]))
+        elif section == "bans":
+            bans = db.global_bans()
+            text = "🚫 الحظر العام\n\n" + ("\n".join(f"• {item}" for item in bans) if bans else "لا يوجد حظر عام.")
+            await query.edit_message_text(text + "\n\nإضافة: حظر عام 123456\nرفع: رفع الحظر العام 123456", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع للوحة المالك", callback_data="owner:home")]]))
+        elif section == "backup":
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            backup_dir = DB_PATH.parent / "backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            target = backup_dir / f"shihab_{stamp}.db"
+            try:
+                shutil.copy2(DB_PATH, target)
+                await query.edit_message_text(f"💾 تم إنشاء النسخة الاحتياطية المحلية: {target.name}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع للوحة المالك", callback_data="owner:home")]]))
+            except OSError as exc:
+                await query.edit_message_text(f"تعذر إنشاء النسخة الاحتياطية: {exc}")
+        elif section == "help":
+            await query.edit_message_text("📖 إدارة شهاب\n\nلوحة المالك خاصة بـ OWNER_ID فقط. الأوامر المهمة:\nإضافة مساعد 123456\nحظر عام 123456\nترقية المجموعة\nشحن 30\nبث نص الرسالة\nفحص الاشتراك\nنسخة احتياطية\n\nيمكنك العودة للوحة من الزر أدناه.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع للوحة المالك", callback_data="owner:home")]]))
+        elif section == "close":
+            await query.edit_message_text("تم إغلاق لوحة المالك. أرسل /owner لفتحها من جديد.")
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
