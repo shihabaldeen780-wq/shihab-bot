@@ -819,12 +819,12 @@ async def command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 def main_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton("الأوامر", callback_data="home:commands"), InlineKeyboardButton("الخدمات", callback_data="home:services")],
-        [InlineKeyboardButton("الإعدادات", callback_data="home:settings"), InlineKeyboardButton("🎮 الألعاب", callback_data="games:menu")],
-        [InlineKeyboardButton("عن شهاب", callback_data="home:about")],
+        [InlineKeyboardButton("📚 الأوامر", callback_data="home:commands"), InlineKeyboardButton("🧭 الخدمات", callback_data="home:services")],
+        [InlineKeyboardButton("🎮 الألعاب", callback_data="games:menu"), InlineKeyboardButton("🛡️ إدارة المجموعة", callback_data="home:settings")],
+        [InlineKeyboardButton("ℹ️ عن شهاب", callback_data="home:about")],
     ]
     if is_owner:
-        rows.append([InlineKeyboardButton("لوحة المالك", callback_data="owner:home")])
+        rows.append([InlineKeyboardButton("🔐 لوحة المالك", callback_data="owner:home")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1512,12 +1512,10 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 def games_menu_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎲 نرد", callback_data="games:dice"), InlineKeyboardButton("🪙 عملة", callback_data="games:coin")],
-        [InlineKeyboardButton("🎰 سلوت", callback_data="games:slots"), InlineKeyboardButton("🔮 حظ", callback_data="games:fortune")],
         [InlineKeyboardButton("🪨 حجر ورق مقص", callback_data="games:rps"), InlineKeyboardButton("🧠 سؤال", callback_data="games:quiz")],
         [InlineKeyboardButton("🧠 صراحة", callback_data="games:truth"), InlineKeyboardButton("🎯 تحدي", callback_data="games:dare")],
-        [InlineKeyboardButton("🏆 المتصدرون", callback_data="games:leaderboard"), InlineKeyboardButton("💰 نقاطي", callback_data="games:points")],
-        [InlineKeyboardButton("👤 ملفي الاقتصادي", callback_data="economy:profile"), InlineKeyboardButton("🛍️ المتجر", callback_data="economy:shop")],
-        [InlineKeyboardButton("🎁 بحث الكنز", callback_data="economy:treasure"), InlineKeyboardButton("🏆 أغنى الأعضاء", callback_data="economy:top")],
+        [InlineKeyboardButton("💰 نقاطي", callback_data="games:points"), InlineKeyboardButton("🛍️ الاقتصاد", callback_data="economy:profile")],
+        [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="home:main")],
     ])
 
 
@@ -2680,7 +2678,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     data = query.data or ""
     user_id = query.from_user.id
     if data == "games:menu":
-        await query.edit_message_text("🎮 مركز ألعاب شهاب\n\nاختر لعبة:", reply_markup=games_menu_markup())
+        await query.edit_message_text("🎮 مركز ألعاب شهاب\n━━━━━━━━━━━━━━━━━━\nاختر لعبة واحدة للبدء.\nالألعاب الإضافية متاحة بالأوامر العربية: سلوت، حظ، المتصدرون، الكنز.", reply_markup=games_menu_markup())
     elif data == "economy:profile":
         await economy_command(update, context)
     elif data == "economy:shop":
@@ -2722,7 +2720,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif data == "home:about":
         await query.edit_message_text("🛡️ عن شهاب\n━━━━━━━━━━━━━━━━━━\nشهاب مساعد عربي صُمم ليجمع بين الإدارة المنضبطة، الحماية الذكية، الترفيه، والاقتصاد داخل تجربة واحدة واضحة.\n\nيعمل كل إعداد داخل مجموعته بشكل مستقل، ويتحقق من الصلاحيات قبل الإجراءات الإدارية. كما يدعم الأوامر العربية المباشرة والقوائم التفاعلية لتقليل الكتابة والارتباك.\n\nشعار شهاب: تنظيم أقوى، تفاعل أذكى، وإدارة أوضح.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📚 الأوامر", callback_data="home:commands:0"), InlineKeyboardButton("🧭 الخدمات", callback_data="home:services:0")], [InlineKeyboardButton("رجوع", callback_data="home:main")]]))
     elif data == "home:main":
-        await query.edit_message_text("القائمة الرئيسية لشهاب:", reply_markup=main_keyboard(user_id == OWNER_ID))
+        await query.edit_message_text("🏠 القائمة الرئيسية\\n\\nاختر قسماً واحداً للبدء:", reply_markup=main_keyboard(user_id == OWNER_ID))
     elif data == "home:settings":
         chat = update.effective_chat
         if not chat or chat.type == ChatType.PRIVATE:
