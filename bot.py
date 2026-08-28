@@ -797,7 +797,14 @@ async def command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     db.register(update.effective_user.id, update.effective_user.first_name, update.effective_user.username, update.effective_chat.id, update.effective_chat.title or "")
     await update.effective_message.reply_text(
-        "مرحباً بك في شهاب.\n\nأنا مدير مجموعات عربي عملي: حماية، صلاحيات، ردود، ترحيب، إعدادات، وإحصائيات.\nاختر من القائمة أو استخدم /help.",
+        "🛡️ شِهــاب | قائد إدارة مجموعتك\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "مرحباً بك في بوت شهاب، المساعد العربي العملي لإدارة المجموعات وتطوير التفاعل.\n\n"
+        "🎯 حماية ذكية وإدارة دقيقة\n"
+        "🎮 ألعاب واقتصاد ونظام اجتماعي\n"
+        "⚙️ إعدادات مستقلة لكل مجموعة\n"
+        "📚 أوامر عربية واضحة وواجهة تفاعلية\n\n"
+        "اختر القسم من الأزرار أدناه، أو أرسل /help لعرض الأوامر على صفحات مرتبة.",
         reply_markup=main_keyboard(update.effective_user.id == OWNER_ID),
     )
 
@@ -852,17 +859,17 @@ def services_text() -> str:
 
 
 COMMAND_PAGES = [
-    ("الإدارة والحماية", "بالرد على رسالة العضو: /kick /ban /unban /mute /unmute /warn /warns /resetwarns /jail /unjail /restrict\\n\\nبالعربية: طرد، حظر، رفع الحظر، كتم 10، فك الكتم، سجن، فك السجن، تقييد، تحذير، التحذيرات."),
-    ("إعدادات المجموعة", "/lock feature /unlock feature /enable feature /disable feature\\n/setwelcome نص /delwelcome /setrules نص /rules\\n\\nبالعربية: قفل الروابط، فتح الصور، تفعيل الترحيب، تعطيل التكرار، تعيين الترحيب نص، تعيين القوانين نص."),
-    ("الاقتصاد والألعاب", "/points /daily /leaderboard /dice /coin /slots /rps /quiz /guess\\n/economy /bank /shop /inventory /transfer /economytop /reputation\\n\\nبالعربية: ألعاب، نقاطي، اليومية، المتصدرين، ملفي، بنك إيداع 100، متجر، حقيبتي، تحويل 50، سمعتي، كنز، معركة، كلمات."),
-    ("الخدمات والتفاعل", "/id /age /bio /services /whisper /poll /pin /unpin /report /schedule /groupstats\\n/search اسم فيديو /yt رابط فيديو\\n\\nالنظام الاجتماعي: زواج بالرد، زواجي، طلاق، زواجات. الردود والأوامر المخصصة: /addreply /replies /addcmd."),
+    ("الإدارة والحماية", "بالرد على رسالة العضو: /kick /ban /unban /mute /unmute /warn /warns /resetwarns /jail /unjail /restrict\n\nبالعربية: طرد، حظر، رفع الحظر، كتم 10، فك الكتم، سجن، فك السجن، تقييد، تحذير، التحذيرات."),
+    ("إعدادات المجموعة", "/lock feature /unlock feature /enable feature /disable feature\n/setwelcome نص /delwelcome /setrules نص /rules\n\nبالعربية: قفل الروابط، فتح الصور، تفعيل الترحيب، تعطيل التكرار، تعيين الترحيب نص، تعيين القوانين نص."),
+    ("الاقتصاد والألعاب", "/points /daily /leaderboard /dice /coin /slots /rps /quiz /guess\n/economy /bank /shop /inventory /transfer /economytop /reputation\n\nبالعربية: ألعاب، نقاطي، اليومية، المتصدرين، ملفي، بنك إيداع 100، متجر، حقيبتي، تحويل 50، سمعتي، كنز، معركة، كلمات."),
+    ("الخدمات والتفاعل", "/id /age /bio /services /whisper /poll /pin /unpin /report /schedule /groupstats\n/search اسم فيديو /yt رابط فيديو\n\nالنظام الاجتماعي: زواج بالرد، زواجي، طلاق، زواجات. الردود والأوامر المخصصة: /addreply /replies /addcmd."),
 ]
 
 
 def commands_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
     page = max(0, min(page, len(COMMAND_PAGES) - 1))
     title, body = COMMAND_PAGES[page]
-    text = f"📚 أوامر شهاب — {title}\\n\\n{body}\\n\\nصفحة {page + 1} من {len(COMMAND_PAGES)}"
+    text = f"📚 أوامر شهاب\n━━━━━━━━━━━━━━━━━━\nالقسم: {title}\n\n{body}\n\n━━━━━━━━━━━━━━━━━━\nصفحة {page + 1} من {len(COMMAND_PAGES)}\nاختر التالي للتنقل بين الأقسام."
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("السابق", callback_data=f"home:commands:{page - 1}"))
@@ -883,7 +890,7 @@ SERVICE_PAGES = [
 def services_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
     page = max(0, min(page, len(SERVICE_PAGES) - 1))
     title, body = SERVICE_PAGES[page]
-    text = f"🧭 خدمات شهاب — {title}\\n\\n{body}\\n\\nكل مجموعة لها إعداداتها المستقلة، ولا يُنفذ إجراء إداري دون تحقق من صلاحية المشرف.\\nصفحة {page + 1} من {len(SERVICE_PAGES)}"
+    text = f"🧭 خدمات شهاب\n━━━━━━━━━━━━━━━━━━\nالقسم: {title}\n\n{body}\n\n━━━━━━━━━━━━━━━━━━\nكل مجموعة لها إعداداتها المستقلة، ولا يُنفذ إجراء إداري دون تحقق من صلاحية المشرف.\nصفحة {page + 1} من {len(SERVICE_PAGES)}"
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("السابق", callback_data=f"home:services:{page - 1}"))
@@ -898,7 +905,7 @@ def settings_page(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
     features = db.all_features(chat_id)
     keys = [key for key in FEATURES if key != "all"]
     enabled = sum(1 for key in keys if features.get(key, True))
-    text = f"⚙️ إعدادات المجموعة\\n\\nالمفتوح: {enabled}/{len(keys)}\\nاضغط على أي ميزة لتبديلها. التغيير متاح لمشرفي المجموعة فقط."
+    text = f"⚙️ إعدادات المجموعة\n━━━━━━━━━━━━━━━━━━\nالمفاتيح المفتوحة: {enabled}/{len(keys)}\n\nاضغط على الميزة لتبديل حالتها.\nالتعديل متاح لمشرفي المجموعة فقط، وكل تغيير يُحفظ فوراً."
     buttons = []
     for index in range(0, len(keys), 2):
         row = []
@@ -1507,7 +1514,7 @@ def games_menu_markup() -> InlineKeyboardMarkup:
 
 
 async def games_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text("🎮 مركز ألعاب شهاب\\n\\nاختر لعبة أو اكتب أحد الأوامر العربية: نرد، عملة، حجر ورق مقص، سؤال، نقاطي، اليومية، المتصدرين.", reply_markup=games_menu_markup())
+    await update.effective_message.reply_text("🎮 مركز ألعاب شهاب\n\nاختر لعبة أو اكتب أحد الأوامر العربية: نرد، عملة، حجر ورق مقص، سؤال، نقاطي، اليومية، المتصدرين.", reply_markup=games_menu_markup())
 
 
 async def points_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1517,7 +1524,7 @@ async def points_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     profile = db.game_profile(chat.id, user.id)
     achievements = db.achievements(chat.id, user.id)
-    await update.effective_message.reply_text(f"💰 ملف {user.first_name}\\nالنقاط: {profile['coins']}\\nالألعاب: {profile['games']}\\nالفوز: {profile['wins']}\\nالخسارة: {profile['losses']}\\nالإنجازات: {', '.join(achievements) if achievements else 'لا توجد بعد'}")
+    await update.effective_message.reply_text(f"💰 ملف {user.first_name}\nالنقاط: {profile['coins']}\nالألعاب: {profile['games']}\nالفوز: {profile['wins']}\nالخسارة: {profile['losses']}\nالإنجازات: {', '.join(achievements) if achievements else 'لا توجد بعد'}")
 
 
 async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1528,7 +1535,7 @@ async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     ok, profile = db.daily_reward(chat.id, user.id, datetime.now(timezone.utc).date().isoformat())
     if ok:
         unlocked = db.add_achievement(chat.id, user.id, "جامع اليومية")
-        await update.effective_message.reply_text(f"🎁 استلمت مكافأتك اليومية: +100 نقطة\\nرصيدك الآن: {profile['coins']}" + ("\\n🏅 إنجاز جديد: جامع اليومية" if unlocked else ""))
+        await update.effective_message.reply_text(f"🎁 استلمت مكافأتك اليومية: +100 نقطة\nرصيدك الآن: {profile['coins']}" + ("\n🏅 إنجاز جديد: جامع اليومية" if unlocked else ""))
     else:
         await update.effective_message.reply_text(f"⏳ استلمت اليومية مسبقاً. رصيدك الحالي: {profile['coins']}")
 
@@ -1542,7 +1549,7 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.effective_message.reply_text("🏆 لا توجد نتائج بعد. ابدأ بلعبة أو استلم اليومية.")
         return
     lines = [f"{index}. {row['first_name'] or row['user_id']} — {row['coins']} نقطة | فوز {row['wins']}" for index, row in enumerate(rows, 1)]
-    await update.effective_message.reply_text("🏆 متصدرون المجموعة\\n\\n" + "\\n".join(lines))
+    await update.effective_message.reply_text("🏆 متصدرون المجموعة\n\n" + "\n".join(lines))
 
 
 async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1555,7 +1562,7 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     profile = db.record_game(chat.id, user.id, value == 6, delta)
     if value == 6:
         db.add_achievement(chat.id, user.id, "ضربة النرد")
-    await update.effective_message.reply_text(f"🎲 النتيجة: {value}\\n{'ممتاز! +15 نقطة' if value == 6 else f'+{delta} نقاط للمشاركة'}\\nرصيدك: {profile['coins']}")
+    await update.effective_message.reply_text(f"🎲 النتيجة: {value}\n{'ممتاز! +15 نقطة' if value == 6 else f'+{delta} نقاط للمشاركة'}\nرصيدك: {profile['coins']}")
 
 
 async def slots_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1576,12 +1583,12 @@ async def slots_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         delta, won = -3, False
         message = "🎰 حظ أوفر في المرة القادمة."
     profile = db.record_game(chat.id, user.id, won, delta)
-    await update.effective_message.reply_text(f"{' | '.join(result)}\\n{message}\\nالنقاط: {delta:+d}\\nرصيدك: {profile['coins']}")
+    await update.effective_message.reply_text(f"{' | '.join(result)}\n{message}\nالنقاط: {delta:+d}\nرصيدك: {profile['coins']}")
 
 
 async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     fortunes = ("اليوم مناسب لبداية جديدة.", "رسالة جميلة ستصل إليك قريباً.", "الهدوء سيجعلك ترى الحل بوضوح.", "فرصة صغيرة قد تتحول إلى إنجاز كبير.", "لا تؤجل الفكرة التي تستطيع تنفيذها الآن.")
-    await update.effective_message.reply_text("🔮 حظك اليوم:\\n" + random.choice(fortunes))
+    await update.effective_message.reply_text("🔮 حظك اليوم:\n" + random.choice(fortunes))
 
 
 async def truth_dare_command(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str) -> None:
@@ -1597,7 +1604,7 @@ async def coin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     result = random.choice(("وجه", "كتابة"))
     profile = db.record_game(chat.id, user.id, True, GAME_REWARDS["draw"])
-    await update.effective_message.reply_text(f"🪙 النتيجة: {result}\\n+{GAME_REWARDS['draw']} نقاط\\nرصيدك: {profile['coins']}")
+    await update.effective_message.reply_text(f"🪙 النتيجة: {result}\n+{GAME_REWARDS['draw']} نقاط\nرصيدك: {profile['coins']}")
 
 
 async def rps_command(update: Update, context: ContextTypes.DEFAULT_TYPE, choice: str | None = None) -> None:
@@ -1619,7 +1626,7 @@ async def rps_command(update: Update, context: ContextTypes.DEFAULT_TYPE, choice
     profile = db.record_game(chat.id, user.id, won, delta)
     if won and result == "فزت":
         db.add_achievement(chat.id, user.id, "بطل المقص")
-    await update.effective_message.reply_text(f"🪨 اختيارك: {RPS_CHOICES[choice]} {choice}\\n🤖 اختيار شهاب: {RPS_CHOICES[bot_choice]} {bot_choice}\\n\\nالنتيجة: {result}\\nالنقاط: {delta:+d}\\nرصيدك: {profile['coins']}")
+    await update.effective_message.reply_text(f"🪨 اختيارك: {RPS_CHOICES[choice]} {choice}\n🤖 اختيار شهاب: {RPS_CHOICES[bot_choice]} {bot_choice}\n\nالنتيجة: {result}\nالنقاط: {delta:+d}\nرصيدك: {profile['coins']}")
 
 
 async def quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1628,7 +1635,7 @@ async def quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     question, answer = random.choice(QUIZ_BANK)
     context.chat_data["active_quiz"] = {"question": question, "answer": normalize(answer), "expires": asyncio.get_running_loop().time() + 45}
-    await update.effective_message.reply_text(f"🧠 سؤال سريع\\n\\n{question}\\n\\nأرسل: إجابة جوابك\\nالوقت: 45 ثانية")
+    await update.effective_message.reply_text(f"🧠 سؤال سريع\n\n{question}\n\nأرسل: إجابة جوابك\nالوقت: 45 ثانية")
 
 
 async def answer_quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE, answer: str) -> None:
@@ -1648,7 +1655,7 @@ async def answer_quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.chat_data.pop("active_quiz", None)
     profile = db.record_game(chat.id, user.id, True, 35)
     unlocked = db.add_achievement(chat.id, user.id, "عبقري الأسئلة")
-    await update.effective_message.reply_text(f"✅ إجابة صحيحة يا {user.first_name}! +35 نقطة\\nرصيدك: {profile['coins']}" + ("\\n🏅 إنجاز جديد: عبقري الأسئلة" if unlocked else ""))
+    await update.effective_message.reply_text(f"✅ إجابة صحيحة يا {user.first_name}! +35 نقطة\nرصيدك: {profile['coins']}" + ("\n🏅 إنجاز جديد: عبقري الأسئلة" if unlocked else ""))
 
 
 async def guess_command(update: Update, context: ContextTypes.DEFAULT_TYPE, guess: str | None = None) -> None:
@@ -1677,7 +1684,7 @@ async def guess_command(update: Update, context: ContextTypes.DEFAULT_TYPE, gues
     delta = 30 if won else -3
     profile = db.record_game(chat.id, user.id, won, delta)
     result_text = "🎉 أصبت!" if won else f"لم تصب. الرقم كان {game['target']}"
-    await update.effective_message.reply_text(f"{result_text}\\nالنقاط: {delta:+d}\\nرصيدك: {profile['coins']}")
+    await update.effective_message.reply_text(f"{result_text}\nالنقاط: {delta:+d}\nرصيدك: {profile['coins']}")
 
 
 async def identity_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1718,7 +1725,7 @@ async def permissions_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     status = await member_status_text(update, target.id)
     rank = db.get_rank(update.effective_chat.id, target.id)
     warns = db.warnings(update.effective_chat.id, target.id)
-    await update.effective_message.reply_text(f"معلومات {target.first_name}:\\nالحالة: {status}\\nالرتبة: {rank or 'عضو'}\\nالتحذيرات: {warns}\\nالمعرف: {target.id}")
+    await update.effective_message.reply_text(f"معلومات {target.first_name}:\nالحالة: {status}\nالرتبة: {rank or 'عضو'}\nالتحذيرات: {warns}\nالمعرف: {target.id}")
 
 
 @group_only
@@ -1767,7 +1774,7 @@ async def list_people_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             lines.append(f"• {member.user.first_name} — {user_id}")
         except TelegramError:
             lines.append(f"• {user_id}")
-    await update.effective_message.reply_text(f"{title}:\\n" + "\\n".join(lines))
+    await update.effective_message.reply_text(f"{title}:\n" + "\n".join(lines))
 
 
 @group_only
@@ -1798,7 +1805,7 @@ async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         admins = await update.effective_chat.get_administrators()
         lines = [f"• {member.user.first_name} — {member.user.id}" for member in admins]
-        await update.effective_message.reply_text("مشرفو المجموعة:\\n" + "\\n".join(lines))
+        await update.effective_message.reply_text("مشرفو المجموعة:\n" + "\n".join(lines))
     except TelegramError as exc:
         await update.effective_message.reply_text(f"تعذر جلب المشرفين: {exc}")
 
@@ -1809,12 +1816,12 @@ async def group_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     admins = await chat.get_administrators()
     features = db.all_features(chat.id)
     enabled = sum(1 for value in features.values() if value)
-    await update.effective_message.reply_text(f"معلومات المجموعة\\n\\nالاسم: {chat.title or 'بدون اسم'}\\nالمعرف: {chat.id}\\nالمشرفون: {len(admins)}\\nالإعدادات المفتوحة: {enabled}/{len(FEATURES)}\\nالرابط العام: {('@' + chat.username) if chat.username else 'لا يوجد'}")
+    await update.effective_message.reply_text(f"معلومات المجموعة\n\nالاسم: {chat.title or 'بدون اسم'}\nالمعرف: {chat.id}\nالمشرفون: {len(admins)}\nالإعدادات المفتوحة: {enabled}/{len(FEATURES)}\nالرابط العام: {('@' + chat.username) if chat.username else 'لا يوجد'}")
 
 
 async def date_time_command(update: Update, context: ContextTypes.DEFAULT_TYPE, date_only: bool = False) -> None:
     now = datetime.now().astimezone()
-    await update.effective_message.reply_text(now.strftime("التاريخ: %Y-%m-%d" if date_only else "الساعة: %H:%M:%S\\nالتاريخ: %Y-%m-%d"))
+    await update.effective_message.reply_text(now.strftime("التاريخ: %Y-%m-%d" if date_only else "الساعة: %H:%M:%S\nالتاريخ: %Y-%m-%d"))
 
 
 async def age_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2305,7 +2312,7 @@ async def natural_language_handler(update: Update, context: ContextTypes.DEFAULT
         return
     if raw in ("المساعدين", "مساعدين المطور"):
         if await owner_only(update):
-            await message.reply_text("مساعدو المطور:\\n" + ("\\n".join(f"• {user_id}" for user_id in db.assistants()) or "لا يوجد"))
+            await message.reply_text("مساعدو المطور:\n" + ("\n".join(f"• {user_id}" for user_id in db.assistants()) or "لا يوجد"))
         return
     if verb in ("ترقية", "رفع") and rest.startswith(("المجموعة", "القروب")):
         await plan_command(update, context, "vip")
@@ -2533,7 +2540,7 @@ async def owner_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     stats = db.stats()
     plans = db.plan_counts()
-    await update.effective_message.reply_text(f"إحصائيات شهاب\\n\\nالمستخدمون: {stats['users']}\\nالمجموعات: {stats['groups']}\\nVIP: {plans.get('vip', 0)}\\nعادية: {plans.get('free', 0)}\\nالمساعدون: {len(db.assistants())}\\nالمحظورون عاماً: {len(db.global_bans())}\\nالأحداث: {stats['events']}")
+    await update.effective_message.reply_text(f"إحصائيات شهاب\n\nالمستخدمون: {stats['users']}\nالمجموعات: {stats['groups']}\nVIP: {plans.get('vip', 0)}\nعادية: {plans.get('free', 0)}\nالمساعدون: {len(db.assistants())}\nالمحظورون عاماً: {len(db.global_bans())}\nالأحداث: {stats['events']}")
 
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2564,7 +2571,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     data = query.data or ""
     user_id = query.from_user.id
     if data == "games:menu":
-        await query.edit_message_text("🎮 مركز ألعاب شهاب\\n\\nاختر لعبة:", reply_markup=games_menu_markup())
+        await query.edit_message_text("🎮 مركز ألعاب شهاب\n\nاختر لعبة:", reply_markup=games_menu_markup())
     elif data == "economy:profile":
         await economy_command(update, context)
     elif data == "economy:shop":
@@ -2604,7 +2611,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         text, markup = services_page(page)
         await query.edit_message_text(text, reply_markup=markup)
     elif data == "home:about":
-        await query.edit_message_text("شهاب ليس مجرد ردود عشوائية: هو نظام إدارة بصلاحيات، إعدادات مستقلة لكل مجموعة، وسجل للأحداث مع حماية من الأخطاء الشائعة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data="home:main")]]))
+        await query.edit_message_text("🛡️ عن شهاب\n━━━━━━━━━━━━━━━━━━\nشهاب مساعد عربي صُمم ليجمع بين الإدارة المنضبطة، الحماية الذكية، الترفيه، والاقتصاد داخل تجربة واحدة واضحة.\n\nيعمل كل إعداد داخل مجموعته بشكل مستقل، ويتحقق من الصلاحيات قبل الإجراءات الإدارية. كما يدعم الأوامر العربية المباشرة والقوائم التفاعلية لتقليل الكتابة والارتباك.\n\nشعار شهاب: تنظيم أقوى، تفاعل أذكى، وإدارة أوضح.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📚 الأوامر", callback_data="home:commands:0"), InlineKeyboardButton("🧭 الخدمات", callback_data="home:services:0")], [InlineKeyboardButton("رجوع", callback_data="home:main")]]))
     elif data == "home:main":
         await query.edit_message_text("القائمة الرئيسية لشهاب:", reply_markup=main_keyboard(user_id == OWNER_ID))
     elif data == "home:settings":
