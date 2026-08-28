@@ -848,7 +848,7 @@ def main_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("📚 الأوامر", callback_data="home:commands"), InlineKeyboardButton("🧭 الخدمات", callback_data="home:services")],
         [InlineKeyboardButton("🎮 الألعاب", callback_data="games:menu"), InlineKeyboardButton("🛡️ إدارة المجموعة", callback_data="home:settings")],
-        [InlineKeyboardButton("ℹ️ عن شهاب", callback_data="home:about")],
+        [InlineKeyboardButton("📝 المحتوى", callback_data="content:menu")],
     ]
     if is_owner:
         rows.append([InlineKeyboardButton("🔐 لوحة المالك", callback_data="owner:home")])
@@ -901,6 +901,29 @@ COMMAND_PAGES = [
 ]
 
 
+def commands_menu() -> tuple[str, InlineKeyboardMarkup]:
+    text = ("📚 أوامر شهاب\n━━━━━━━━━━━━━━━━━━\n"
+            "اختر القسم الذي تحتاجه، وستظهر لك الأوامر مرتبة مع طريقة الاستخدام.\n\n"
+            "أوامر استهداف الأعضاء تعمل بالرد على رسالة العضو.")
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛡️ الإدارة والحماية", callback_data="home:commands:0"), InlineKeyboardButton("⚙️ إعدادات المجموعة", callback_data="home:commands:1")],
+        [InlineKeyboardButton("🎮 الألعاب والاقتصاد", callback_data="home:commands:2"), InlineKeyboardButton("🧭 الخدمات والتفاعل", callback_data="home:commands:3")],
+        [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="home:main")],
+    ])
+    return text, markup
+
+
+def services_menu() -> tuple[str, InlineKeyboardMarkup]:
+    text = ("🧭 خدمات شهاب\n━━━━━━━━━━━━━━━━━━\n"
+            "اختر مجالاً واحداً لاستعراض ما يقدمه شهاب داخل مجموعتك.")
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛡️ الحماية", callback_data="home:services:0"), InlineKeyboardButton("🤝 الإدارة والتفاعل", callback_data="home:services:1")],
+        [InlineKeyboardButton("🎮 الترفيه والاقتصاد", callback_data="home:services:2")],
+        [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="home:main")],
+    ])
+    return text, markup
+
+
 def commands_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
     page = max(0, min(page, len(COMMAND_PAGES) - 1))
     title, body = COMMAND_PAGES[page]
@@ -911,7 +934,7 @@ def commands_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
     if page < len(COMMAND_PAGES) - 1:
         nav.append(InlineKeyboardButton("التالي", callback_data=f"home:commands:{page + 1}"))
     rows = [nav] if nav else []
-    rows.append([InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="home:main"), InlineKeyboardButton("الخدمات", callback_data="home:services:0")])
+    rows.append([InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="home:main"), InlineKeyboardButton("الخدمات", callback_data="home:services")])
     return text, InlineKeyboardMarkup(rows)
 
 
@@ -932,7 +955,7 @@ def services_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
     if page < len(SERVICE_PAGES) - 1:
         nav.append(InlineKeyboardButton("التالي", callback_data=f"home:services:{page + 1}"))
     rows = [nav] if nav else []
-    rows.append([InlineKeyboardButton("الأوامر", callback_data="home:commands:0"), InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="home:main")])
+    rows.append([InlineKeyboardButton("📚 تصنيفات الأوامر", callback_data="home:commands"), InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="home:main")])
     return text, InlineKeyboardMarkup(rows)
 
 
@@ -953,12 +976,12 @@ def settings_page(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text, markup = commands_page(0)
+    text, markup = commands_menu()
     await update.effective_message.reply_text(text, reply_markup=markup)
 
 
 async def services_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text, markup = services_page(0)
+    text, markup = services_menu()
     await update.effective_message.reply_text(text, reply_markup=markup)
 
 
@@ -1562,6 +1585,37 @@ def games_menu_markup() -> InlineKeyboardMarkup:
 
 async def games_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text("🎮 مركز ألعاب شهاب\n\nاختر لعبة أو اكتب أحد الأوامر العربية: نرد، عملة، حجر ورق مقص، سؤال، نقاطي، اليومية، المتصدرين.", reply_markup=games_menu_markup())
+
+
+CONTENT_ITEMS = {
+    "adhkar": ("🤲 أذكار مختارة", "سبحان الله وبحمده، سبحان الله العظيم.\n\nاللهم اجعل يومك هادئاً، وقلبك مطمئناً، وخطوتك مباركة."),
+    "quote": ("💬 اقتباس شهاب", "الإنجاز لا يحتاج ضجيجاً؛ يحتاج خطوة واضحة تتكرر كل يوم."),
+    "poem": ("✍️ سطر شعري", "نمضي بثباتٍ، والآمالُ بوصلتُنا\nوفي كل دربٍ للنجاحِ بدايةٌ."),
+    "story": ("📖 قصة قصيرة", "بدأت الفكرة صغيرة، لكن صاحبها منحها وقتاً يومياً. بعد أسابيع أصبحت عادة، وبعد أشهر أصبحت نتيجة."),
+    "question": ("❓ سؤال اليوم", "ما العادة الصغيرة التي تستطيع الالتزام بها اليوم لتجعل غدك أفضل؟"),
+}
+
+
+def content_menu() -> tuple[str, InlineKeyboardMarkup]:
+    text = ("📝 مركز المحتوى\n━━━━━━━━━━━━━━━━━━\n"
+            "اختر نوعاً واحداً للحصول على محتوى قصير ومنظم.\n"
+            "المحتوى هنا مستقل ومصمم خصيصاً لتجربة شهاب.")
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🤲 أذكار", callback_data="content:adhkar"), InlineKeyboardButton("💬 اقتباس", callback_data="content:quote")],
+        [InlineKeyboardButton("✍️ شعر", callback_data="content:poem"), InlineKeyboardButton("📖 قصة", callback_data="content:story")],
+        [InlineKeyboardButton("❓ سؤال اليوم", callback_data="content:question"), InlineKeyboardButton("ℹ️ عن شهاب", callback_data="home:about")],
+        [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="home:main")],
+    ])
+    return text, markup
+
+
+async def content_command(update: Update, context: ContextTypes.DEFAULT_TYPE, kind: str | None = None) -> None:
+    if kind in CONTENT_ITEMS:
+        title, body = CONTENT_ITEMS[kind]
+        await update.effective_message.reply_text(f"{title}\n━━━━━━━━━━━━━━━━━━\n{body}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📝 مركز المحتوى", callback_data="content:menu"), InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="home:main")]]))
+        return
+    text, markup = content_menu()
+    await update.effective_message.reply_text(text, reply_markup=markup)
 
 
 async def points_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2225,6 +2279,9 @@ async def natural_language_handler(update: Update, context: ContextTypes.DEFAULT
     if raw in ("ألعاب", "العاب", "الألعاب", "مركز الألعاب"):
         await games_command(update, context)
         return
+    if raw in ("محتوى", "المحتوى", "مركز المحتوى"):
+        await content_command(update, context)
+        return
     if raw in ("نقاطي", "نقاط"):
         await points_command(update, context)
         return
@@ -2769,16 +2826,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await leaderboard_command(update, context)
     elif data == "games:points":
         await points_command(update, context)
-    elif data == "home:commands" or data.startswith("home:commands:"):
-        page = int(data.rsplit(":", 1)[1]) if data.count(":") > 1 and data.rsplit(":", 1)[1].isdigit() else 0
+    elif data == "content:menu":
+        text, markup = content_menu()
+        await query.edit_message_text(text, reply_markup=markup)
+    elif data.startswith("content:"):
+        kind = data.split(":", 1)[1]
+        if kind not in CONTENT_ITEMS:
+            return
+        title, body = CONTENT_ITEMS[kind]
+        await query.edit_message_text(f"{title}\n━━━━━━━━━━━━━━━━━━\n{body}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📝 مركز المحتوى", callback_data="content:menu"), InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="home:main")]]))
+    elif data == "home:commands":
+        text, markup = commands_menu()
+        await query.edit_message_text(text, reply_markup=markup)
+    elif data.startswith("home:commands:"):
+        page = int(data.rsplit(":", 1)[1]) if data.rsplit(":", 1)[1].isdigit() else 0
         text, markup = commands_page(page)
         await query.edit_message_text(text, reply_markup=markup)
-    elif data == "home:services" or data.startswith("home:services:"):
-        page = int(data.rsplit(":", 1)[1]) if data.count(":") > 1 and data.rsplit(":", 1)[1].isdigit() else 0
+    elif data == "home:services":
+        text, markup = services_menu()
+        await query.edit_message_text(text, reply_markup=markup)
+    elif data.startswith("home:services:"):
+        page = int(data.rsplit(":", 1)[1]) if data.rsplit(":", 1)[1].isdigit() else 0
         text, markup = services_page(page)
         await query.edit_message_text(text, reply_markup=markup)
     elif data == "home:about":
-        await query.edit_message_text("🛡️ عن شهاب\n━━━━━━━━━━━━━━━━━━\nشهاب مساعد عربي صُمم ليجمع بين الإدارة المنضبطة، الحماية الذكية، الترفيه، والاقتصاد داخل تجربة واحدة واضحة.\n\nيعمل كل إعداد داخل مجموعته بشكل مستقل، ويتحقق من الصلاحيات قبل الإجراءات الإدارية. كما يدعم الأوامر العربية المباشرة والقوائم التفاعلية لتقليل الكتابة والارتباك.\n\nشعار شهاب: تنظيم أقوى، تفاعل أذكى، وإدارة أوضح.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📚 الأوامر", callback_data="home:commands:0"), InlineKeyboardButton("🧭 الخدمات", callback_data="home:services:0")], [InlineKeyboardButton("رجوع", callback_data="home:main")]]))
+        await query.edit_message_text("🛡️ عن شهاب\n━━━━━━━━━━━━━━━━━━\nشهاب مساعد عربي صُمم ليجمع بين الإدارة المنضبطة، الحماية الذكية، الترفيه، والاقتصاد داخل تجربة واحدة واضحة.\n\nيعمل كل إعداد داخل مجموعته بشكل مستقل، ويتحقق من الصلاحيات قبل الإجراءات الإدارية. كما يدعم الأوامر العربية المباشرة والقوائم التفاعلية لتقليل الكتابة والارتباك.\n\nشعار شهاب: تنظيم أقوى، تفاعل أذكى، وإدارة أوضح.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📚 الأوامر", callback_data="home:commands"), InlineKeyboardButton("🧭 الخدمات", callback_data="home:services")], [InlineKeyboardButton("رجوع", callback_data="home:main")]]))
     elif data == "home:main":
         await query.edit_message_text("🏠 القائمة الرئيسية\n\nاختر قسماً واحداً للبدء:", reply_markup=main_keyboard(user_id == OWNER_ID))
     elif data == "home:settings":
@@ -2941,6 +3013,7 @@ def add_handlers(app: Application) -> None:
     app.add_handler(CommandHandler(["search"], search_command))
     app.add_handler(CommandHandler(["yt"], youtube_command))
     app.add_handler(CommandHandler(["games"], games_command))
+    app.add_handler(CommandHandler(["content"], content_command))
     app.add_handler(CommandHandler(["points"], points_command))
     app.add_handler(CommandHandler(["economy", "profile", "wallet"], economy_command))
     app.add_handler(CommandHandler(["bank"], bank_command))
