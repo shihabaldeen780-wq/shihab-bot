@@ -123,6 +123,14 @@ MENTION_REPLIES = [
     "حاضر يا غالي، قل لي.",
     "موجود، لكن بدون إزعاج للمجموعة.",
 ]
+MILITARY_MENTION_REPLIES = [
+    "شهاب حاضر. اذكر المهمة بوضوح، والتنفيذ يكون حسب الصلاحيات.",
+    "تم استلام النداء. حدّد المطلوب مباشرة وبدون تكرار.",
+    "حاضر. أعطني أمراً واضحاً وسأتعامل معه فوراً ضمن النظام.",
+    "شهاب في الخدمة. الكلام المختصر، والطلب المحدد، والتنفيذ منضبط.",
+    "تم رصد النداء. انتقل إلى المطلوب، ولا تُرسل رسائل عشوائية.",
+]
+DIRECT_CALLS = {"بوت", "شهاب", "يا بوت", "يا شهاب", "بوت يا", "شهاب يا"}
 
 LOCKABLE_MEDIA = {
     "photos": lambda m: bool(m.photo),
@@ -843,21 +851,79 @@ def services_text() -> str:
     )
 
 
+COMMAND_PAGES = [
+    ("الإدارة والحماية", "بالرد على رسالة العضو: /kick /ban /unban /mute /unmute /warn /warns /resetwarns /jail /unjail /restrict\\n\\nبالعربية: طرد، حظر، رفع الحظر، كتم 10، فك الكتم، سجن، فك السجن، تقييد، تحذير، التحذيرات."),
+    ("إعدادات المجموعة", "/lock feature /unlock feature /enable feature /disable feature\\n/setwelcome نص /delwelcome /setrules نص /rules\\n\\nبالعربية: قفل الروابط، فتح الصور، تفعيل الترحيب، تعطيل التكرار، تعيين الترحيب نص، تعيين القوانين نص."),
+    ("الاقتصاد والألعاب", "/points /daily /leaderboard /dice /coin /slots /rps /quiz /guess\\n/economy /bank /shop /inventory /transfer /economytop /reputation\\n\\nبالعربية: ألعاب، نقاطي، اليومية، المتصدرين، ملفي، بنك إيداع 100، متجر، حقيبتي، تحويل 50، سمعتي، كنز، معركة، كلمات."),
+    ("الخدمات والتفاعل", "/id /age /bio /services /whisper /poll /pin /unpin /report /schedule /groupstats\\n/search اسم فيديو /yt رابط فيديو\\n\\nالنظام الاجتماعي: زواج بالرد، زواجي، طلاق، زواجات. الردود والأوامر المخصصة: /addreply /replies /addcmd."),
+]
+
+
+def commands_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
+    page = max(0, min(page, len(COMMAND_PAGES) - 1))
+    title, body = COMMAND_PAGES[page]
+    text = f"📚 أوامر شهاب — {title}\\n\\n{body}\\n\\nصفحة {page + 1} من {len(COMMAND_PAGES)}"
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("السابق", callback_data=f"home:commands:{page - 1}"))
+    if page < len(COMMAND_PAGES) - 1:
+        nav.append(InlineKeyboardButton("التالي", callback_data=f"home:commands:{page + 1}"))
+    rows = [nav] if nav else []
+    rows.append([InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="home:main"), InlineKeyboardButton("الخدمات", callback_data="home:services:0")])
+    return text, InlineKeyboardMarkup(rows)
+
+
+SERVICE_PAGES = [
+    ("الحماية", "حماية الروابط والسبام والتكرار، قفل الصور والفيديو والملفات والصوت والملصقات، تحذيرات، كتم مؤقت، سجن، ومنع الإضافات المزعجة."),
+    ("الإدارة والتفاعل", "ترحيب وقوانين، ردود وأوامر مخصصة، رتب داخلية، ترقية مشرفين، بلاغات، تثبيت، جدولة وتذكير، معلومات الأعضاء والمجموعة، وإحصائيات النشاط."),
+    ("الترفيه والاقتصاد", "مركز ألعاب، نقاط وخبرة وإنجازات، بنك ومتجر وحقيبة وتحويلات، سمعة، كنز، معركة، كلمات، زواج وطلاق، وبحث يوتيوب اختياري عند تثبيت yt-dlp."),
+]
+
+
+def services_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
+    page = max(0, min(page, len(SERVICE_PAGES) - 1))
+    title, body = SERVICE_PAGES[page]
+    text = f"🧭 خدمات شهاب — {title}\\n\\n{body}\\n\\nكل مجموعة لها إعداداتها المستقلة، ولا يُنفذ إجراء إداري دون تحقق من صلاحية المشرف.\\nصفحة {page + 1} من {len(SERVICE_PAGES)}"
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("السابق", callback_data=f"home:services:{page - 1}"))
+    if page < len(SERVICE_PAGES) - 1:
+        nav.append(InlineKeyboardButton("التالي", callback_data=f"home:services:{page + 1}"))
+    rows = [nav] if nav else []
+    rows.append([InlineKeyboardButton("الأوامر", callback_data="home:commands:0"), InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="home:main")])
+    return text, InlineKeyboardMarkup(rows)
+
+
+def settings_page(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    features = db.all_features(chat_id)
+    keys = [key for key in FEATURES if key != "all"]
+    enabled = sum(1 for key in keys if features.get(key, True))
+    text = f"⚙️ إعدادات المجموعة\\n\\nالمفتوح: {enabled}/{len(keys)}\\nاضغط على أي ميزة لتبديلها. التغيير متاح لمشرفي المجموعة فقط."
+    buttons = []
+    for index in range(0, len(keys), 2):
+        row = []
+        for key in keys[index:index + 2]:
+            mark = "✅" if features.get(key, True) else "⛔"
+            row.append(InlineKeyboardButton(f"{mark} {FEATURES[key]}", callback_data=f"settings:toggle:{key}"))
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("🔄 تبديل الكل", callback_data="settings:all"), InlineKeyboardButton("🏠 القائمة", callback_data="home:main")])
+    return text, InlineKeyboardMarkup(buttons)
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text(commands_text())
+    text, markup = commands_page(0)
+    await update.effective_message.reply_text(text, reply_markup=markup)
 
 
 async def services_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text(services_text())
+    text, markup = services_page(0)
+    await update.effective_message.reply_text(text, reply_markup=markup)
 
 
 @group_only
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    features = db.all_features(update.effective_chat.id)
-    lines = ["إعدادات هذه المجموعة:"]
-    for key, label in FEATURES.items():
-        lines.append(f"{'مفتوح' if features.get(key, True) else 'مغلق'} — {label} ({key})")
-    await update.effective_message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("تحديث الإعدادات", callback_data="home:settings")]]))
+    text, markup = settings_page(update.effective_chat.id)
+    await update.effective_message.reply_text(text, reply_markup=markup)
 
 
 @group_only
@@ -2029,7 +2095,9 @@ async def reply_engine(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         now = asyncio.get_running_loop().time()
         if now - last > 20:
             context.chat_data["last_mention_reply"] = now
-            await message.reply_text(random.choice(MENTION_REPLIES))
+            direct_call = text in DIRECT_CALLS or any(text.startswith(prefix + " ") for prefix in ("بوت", "شهاب", "يا بوت", "يا شهاب"))
+            responses = MILITARY_MENTION_REPLIES if direct_call else MENTION_REPLIES
+            await message.reply_text(random.choice(responses))
             return
     for keyword, responses in BUILTIN_REPLIES.items():
         if keyword in text and random.random() < 0.65:
@@ -2368,12 +2436,11 @@ async def natural_language_handler(update: Update, context: ContextTypes.DEFAULT
         await services_command(update, context)
 
 
-async def owner_only(update: Update) -> bool:
-    if not update.effective_user or update.effective_user.id != OWNER_ID or OWNER_ID == 0:
-        if update.effective_message:
-            await update.effective_message.reply_text("هذا القسم متاح لمالك البوت فقط.")
-        return False
-    return True
+async def owner_only(update: Update, notify: bool = True) -> bool:
+    allowed = bool(update.effective_user and update.effective_user.id == OWNER_ID and OWNER_ID != 0)
+    if not allowed and notify and update.effective_message:
+        await update.effective_message.reply_text("هذا القسم متاح لمالك البوت فقط.")
+    return allowed
 
 
 def owner_menu_markup() -> InlineKeyboardMarkup:
@@ -2395,7 +2462,7 @@ def owner_dashboard_text() -> str:
 
 
 async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await owner_only(update):
+    if not await owner_only(update, notify=False):
         return
     await update.effective_message.reply_text(owner_dashboard_text(), reply_markup=owner_menu_markup())
 
@@ -2528,10 +2595,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await leaderboard_command(update, context)
     elif data == "games:points":
         await points_command(update, context)
-    elif data == "home:commands":
-        await query.edit_message_text(commands_text(), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data="home:main")]]))
-    elif data == "home:services":
-        await query.edit_message_text(services_text(), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data="home:main")]]))
+    elif data == "home:commands" or data.startswith("home:commands:"):
+        page = int(data.rsplit(":", 1)[1]) if data.count(":") > 1 and data.rsplit(":", 1)[1].isdigit() else 0
+        text, markup = commands_page(page)
+        await query.edit_message_text(text, reply_markup=markup)
+    elif data == "home:services" or data.startswith("home:services:"):
+        page = int(data.rsplit(":", 1)[1]) if data.count(":") > 1 and data.rsplit(":", 1)[1].isdigit() else 0
+        text, markup = services_page(page)
+        await query.edit_message_text(text, reply_markup=markup)
     elif data == "home:about":
         await query.edit_message_text("شهاب ليس مجرد ردود عشوائية: هو نظام إدارة بصلاحيات، إعدادات مستقلة لكل مجموعة، وسجل للأحداث مع حماية من الأخطاء الشائعة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data="home:main")]]))
     elif data == "home:main":
@@ -2541,12 +2612,32 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not chat or chat.type == ChatType.PRIVATE:
             await query.edit_message_text("افتح الإعدادات من داخل المجموعة التي تريد إدارتها.")
             return
-        features = db.all_features(chat.id)
-        lines = ["إعدادات المجموعة الحالية:"] + [f"{'مفتوح' if features.get(k, True) else 'مغلق'} — {v}" for k, v in FEATURES.items()]
-        await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data="home:main")]]))
+        if not await is_admin(update):
+            await query.answer("إعدادات المجموعة للمشرفين فقط.", show_alert=True)
+            return
+        text, markup = settings_page(chat.id)
+        await query.edit_message_text(text, reply_markup=markup)
+    elif data.startswith("settings:"):
+        chat = update.effective_chat
+        if not chat or chat.type == ChatType.PRIVATE or not await is_admin(update):
+            await query.answer("إعدادات المجموعة للمشرفين فقط.", show_alert=True)
+            return
+        if data == "settings:all":
+            features = db.all_features(chat.id)
+            target_value = not all(features.get(key, True) for key in LOCK_FEATURES)
+            for key in LOCK_FEATURES:
+                db.set_feature(chat.id, key, target_value)
+        else:
+            key = data.split(":", 2)[-1]
+            if key not in FEATURES or key == "all":
+                await query.answer("ميزة غير معروفة.", show_alert=True)
+                return
+            features = db.all_features(chat.id)
+            db.set_feature(chat.id, key, not features.get(key, True))
+        text, markup = settings_page(chat.id)
+        await query.edit_message_text(text, reply_markup=markup)
     elif data.startswith("owner:"):
         if user_id != OWNER_ID:
-            await query.edit_message_text("غير مصرح.")
             return
         section = data.split(":", 1)[1]
         if section == "home":
